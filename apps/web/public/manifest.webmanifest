@@ -1,0 +1,10 @@
+{
+  "name": "Pawdex",
+  "short_name": "Pawdex",
+  "description": "Parallel Codex sessions, herded by cats.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#fff8ef",
+  "theme_color": "#f5a66b",
+  "icons": []
+}

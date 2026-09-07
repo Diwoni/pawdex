@@ -1,0 +1,19 @@
+{
+  "name": "pawdex",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A cat-powered control plane for parallel Codex sessions.",
+  "license": "MIT",
+  "packageManager": "pnpm@10.7.1",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "pnpm --recursive build",
+    "dev": "pnpm --parallel --filter @pawdex/daemon --filter @pawdex/web dev",
+    "dev:daemon": "pnpm --filter @pawdex/daemon dev",
+    "dev:web": "pnpm --filter @pawdex/web dev",
+    "test": "pnpm --recursive test",
+    "typecheck": "pnpm --recursive typecheck"
+  }
+}
