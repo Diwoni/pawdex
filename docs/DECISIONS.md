@@ -19,6 +19,7 @@
 | ADR-011 | 승인 | 시각 디자인은 기능 계약이 안정될 때까지 보류한다. | 이번 단계의 산출물은 기획·기능·기술 계약이며 현재 UI 스파이크는 디자인 기준이 아니다. |
 | ADR-012 | 승인 | 음성·TTS·알림 quick action은 어떤 Approval도 수락하지 않으며, 특히 파괴적·권한 상승 수락은 잠금 해제된 인증 UI에서만 완료한다. | 음성은 화면 이동·거절·취소만 할 수 있고 단일 또는 반복 발화로 승인 권한을 부여하지 않는다. |
 | ADR-013 | 승인 | P0는 Planner의 자동 Task DAG **제안**을 포함하되 모든 Plan은 사용자가 confirm한 뒤에만 실행한다. | “병렬로 나눠 줘”라는 핵심 JTBD를 제공하면서도 자동 분해 결과의 쓰기 범위·비용·의존성을 사람이 통제한다. 정책 기반 무확인 자동 실행은 P1 검토 대상이다. |
+| ADR-014 | 승인 | 공개 canonical 저장소는 `github.com/Diwoni/pawdex`로 시작하고 GitHub private vulnerability reporting을 사용한다. | 초기 기여·이슈·보안 신고 경로를 하나로 고정한다. 향후 조직 이전 시 redirect와 보안 신고 연속성을 유지한다. |
 
 ## ADR-004: Codex 런타임 통합
 
@@ -70,7 +71,7 @@ PWA가 목표를 충족하지 못하면 iOS/macOS 얇은 native shell을 P1로 �
 2. 음성 STT/TTS의 기본 provider와 완전 로컬 모드 범위
 3. P1 정책 기반 조건부 자동 실행을 허용할 안전 범위와 항상 재확인할 조건
 4. P1에서 typed P0 통합 결과를 바탕으로 자동 PR 생성을 제공할지와 GitHub/GitLab 등 코드 호스팅 adapter의 지원 범위
-5. 공개 프로젝트의 이름, GitHub 조직, 도메인
+5. `Pawdex` 상표·도메인 검토와 향후 별도 GitHub 조직으로 이전할 기준
 6. telemetry는 기본 비활성으로 확정하되 어떤 content-free 진단 단위까지 opt-in으로 허용할지
 7. P1에서 직접 LAN mode가 실제로 필요한지, 계속 relay-only로 유지할지
 
