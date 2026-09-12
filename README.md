@@ -2,11 +2,11 @@
 
 > A local-first, cat-powered control plane for parallel Codex work.
 
-Pawdex는 개발자가 여러 Codex 작업을 안전하게 병렬 실행하고, 작업 완료나 사용자 입력이 필요한 순간을 모바일·Mac 알림으로 받고, 음성으로 다음 지시를 이어갈 수 있게 하는 오픈소스 개발자 하네스입니다.
+Pawdex는 개발자와 비개발자 모두가 여러 Codex 작업을 안전하게 병렬 실행하고, 작업 완료나 사용자 입력이 필요한 순간을 모바일·Mac 알림으로 받고, 음성으로 다음 지시를 이어갈 수 있게 하는 오픈소스 작업 제어 도구이자 개발자 하네스입니다.
 
 ## 현재 단계
 
-**기획 및 기술 검증 단계**입니다. 제품 UI와 시각 디자인은 의도적으로 확정하지 않았습니다.
+**기획 및 기술 검증 단계**입니다. [Figma의 `Pawdex — Product UX` 페이지](https://www.figma.com/design/24X7ul4Vb9aTKZXpSY0OL3/pinpop?node-id=2290-2)를 제품 UX 초안이자 화면 구현 기준으로 승인했습니다. 핵심 흐름과 정보 구조는 이 초안을 따르며, 색·타이포그래피·캐릭터 표현 같은 시각 브랜드는 사용성 검증에 따라 계속 발전할 수 있습니다.
 
 저장소의 코드는 Codex `app-server` 연동, 세션 상태 변환, 로컬 알림 흐름이 가능한지 확인한 **폐기 가능한 기술 스파이크**입니다. 공개 API나 완성된 제품으로 간주하면 안 됩니다. 실제 구현은 아래 문서의 범위와 승인 기준이 확정된 뒤 시작합니다.
 
@@ -28,8 +28,9 @@ Codex 자체에도 원격 작업, 음성 입력, 알림과 Pets가 있습니다.
 3. 재연결 가능한 이벤트 저널과 개발자용 자동화 API
 4. 로컬 우선 및 선택적 종단간 암호화 원격 접속
 5. 세션 문맥을 고려한 음성 라우팅과 명시적 승인 정책
+6. reset 전 남은 사용량을 사전 선택한 유용한 작업 큐에 배분하는 안전한 P1 Usage Window Runner
 
-[Happy](https://github.com/slopus/happy)는 모바일 원격 제어, 음성, 푸시 및 암호화 설계의 중요한 선행 사례입니다. Pawdex는 Codex `app-server` 계약과 다중 작업 오케스트레이션에 더 좁고 깊게 집중합니다.
+[Happy](https://github.com/slopus/happy)는 모바일 원격 제어, 음성, 푸시 및 암호화 설계의 중요한 선행 사례입니다. [Orca](https://github.com/stablyai/orca)는 worktree-native 병렬 실행, 세션 복원, 비교 실행과 diff 리뷰의 선행 사례입니다. Pawdex는 전체 IDE나 범용 터미널을 다시 만들지 않고 Codex `app-server` 계약, 안전한 다중 작업 오케스트레이션, attention·voice 제어면에 더 좁고 깊게 집중합니다.
 
 ## 기획 문서
 
@@ -42,7 +43,9 @@ Codex 자체에도 원격 작업, 음성 입력, 알림과 Pets가 있습니다.
 | [보안 모델](docs/SECURITY_MODEL.md) | 무엇을 신뢰하고 어떤 위협을 막는가? |
 | [개발 로드맵](docs/DELIVERY_PLAN.md) | 무엇을 어떤 검증 순서로 만드는가? |
 | [핵심 결정 기록](docs/DECISIONS.md) | 이미 선택한 것과 아직 열어 둔 것은 무엇인가? |
-| [선행 제품 검토](docs/REFERENCE_REVIEW.md) | Codex·Happy와 무엇이 겹치고 무엇이 다른가? |
+| [선행 제품 검토](docs/REFERENCE_REVIEW.md) | Codex·Happy·Orca와 무엇이 겹치고 무엇이 다른가? |
+
+화면을 구현하거나 리뷰할 때는 [Figma 제품 UX 초안](https://www.figma.com/design/24X7ul4Vb9aTKZXpSY0OL3/pinpop?node-id=2290-2)을 함께 기준으로 사용합니다.
 
 문서 간 추적의 기준은 `FEATURE_SPEC.md`의 기능 ID입니다. 구현 이슈와 테스트는 해당 ID를 참조해야 합니다.
 
@@ -85,6 +88,8 @@ pnpm dev
 - [Codex notifications](https://learn.chatgpt.com/docs/notifications)
 - [Codex Remote](https://learn.chatgpt.com/docs/remote)
 - [Happy repository](https://github.com/slopus/happy)
+- [Orca repository](https://github.com/stablyai/orca)
+- [Orca documentation](https://www.onorca.dev/docs)
 
 ## 라이선스
 

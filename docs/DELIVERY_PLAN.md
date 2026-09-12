@@ -1,7 +1,7 @@
 # Pawdex 구현·출시 계획
 
 > 상태: 초안(기능·기술 계획용)
-> 전제: UI/브랜드/캐릭터 디자인은 별도 입력이 올 때까지 결정하지 않는다. 이 문서는 1~2명의 개발자가 기능 위험을 순서대로 제거하는 계획이다.
+> 전제: 시각 디자인은 별도 산출물에서 발전시키되, 이 문서는 1~2명의 개발자가 기능 위험과 공통 UX·접근성 품질을 순서대로 제거하는 계획이다.
 
 ## 1. 계획 원칙
 
@@ -24,12 +24,14 @@
 | `APR` | 승인과 구조화된 질문 응답 | `APR-001 typed approval` |
 | `VOI` | 음성 인식, 명령 라우팅, TTS | `VOI-002 세션 선택` |
 | `ORC` | 작업 분해, DAG, worktree, 통합 | `ORC-003 worktree 격리` |
+| `REV` | diff 검토와 구조화된 리뷰 전달 | `REV-001 line-anchored 리뷰` |
 | `REL` | 이벤트 저널과 재연결 | `REL-001 durable journal` |
 | `SEC` | 인증, E2EE, 권한 경계 | `SEC-001 보안 경계` |
 | `API` | 타입 안전 API와 이벤트 스트림 | `API-001 공개 계약` |
 | `OBS` | 감사 로그와 진단 | `OBS-001 관측성` |
 | `CFG` | 정책과 설정 우선순위 | `CFG-001 effective policy` |
 | `OSS` | 오픈소스 배포·확장 계약 | `OSS-001 확장 경계` |
+| `NFR` | 성능·신뢰성·보안·UX·접근성 등 횡단 품질 | `NFR-UX-001 점진적 공개` |
 
 이 ID는 기능 명세, 이슈, 테스트, 변경 로그에서 동일하게 사용한다. 하나의 이슈가 여러 기능을 건드리면 주 ID 하나와 관련 ID를 따로 기록한다.
 
@@ -47,6 +49,8 @@
 - 승인·사용자 질문은 Pawdex Approval ID와 원래 세션, aggregate revision에 결합된 타입 안전 응답으로만 처리한다.
 - 완료·입력 필요·실패 이벤트에 로컬 macOS 알림과 고양이 소리를 연결하고 중복을 억제한다.
 - 데몬 재시작 후 세션 목록과 미처리 요청을 복구하거나, 복구 불가 상태를 명시한다.
+- 개발자와 비개발자는 같은 canonical 흐름을 쓰며 기본 화면은 쉬운 말과 다음 행동을, 펼친 상세는 ID·revision·진단 근거를 보여 준다.
+- 핵심 조작은 최소 44×44 CSS px, keyboard/focus/screen-reader label을 갖고 상태는 color+icon+text로 함께 구분한다.
 
 ### 공개 베타 이전에 포함
 
@@ -54,6 +58,14 @@
 - 모바일에서 상태 확인, 일반 텍스트/음성 후속 지시, pending 사용자 질문의 음성 answer, 안전한 승인 화면.
 - Planner가 자동 제안하고 사용자가 confirm한 Task DAG, 동시성 한도, 실패 격리, 취소 전파, 결과 요약, 사용자 확인형 typed 통합.
 - 지원 Codex 버전 범위, 자동 호환성 검사, 서명된 릴리스 및 롤백 절차.
+
+### 공개 베타 이후 선택 P1
+
+- 동일한 동결 명세와 source tree에서 여러 후보를 실행하고 사람이 결과를 비교·선택하는 comparative run.
+- 파일·줄·diff side에 고정한 리뷰 코멘트를 한 turn의 구조화된 피드백으로 묶어 원 세션에 전달하는 기능.
+- 최근 turn이 완료되고 idle window가 지났으며 resumable이고, 해당 Session에 active control lease·pending Approval·unsettled TaskAttempt/subagent가 없을 때만 process attachment를 hibernate하고 안전하게 재연결하는 기능.
+- provider가 공식적으로 제공하는 usage/rate-limit 정보를 출처·관측 시각·신선도와 함께 보여 주는 기능. 계정 전환이나 quota 우회는 제공하지 않는다.
+- 로컬에서 미리 고정한 queue·목표 사용률 범위·reserve·launch buffer·RunBudget을 잠금 해제된 인증 UI의 단일 action으로 실행하는 `UsageWindowRun`. 정확한 100% 소진, filler 생성, 자동 결제·reset credit 소비는 제공하지 않는다.
 
 ### 첫 안정판 이후 후보
 
@@ -76,6 +88,7 @@
 | Gate 0~M3 로컬 기능 알파 | 36~59인일 | 약 8~12 집중 주 | 약 5~8 집중 주 |
 | M4~M6 원격·음성·하드닝 추가 | 31~53인일 | 약 7~11 집중 주 추가 | 약 4~7 집중 주 추가 |
 | 전체 공개 베타 기준선 | **67~112인일** | **약 14~23 집중 주** | **약 8~15 집중 주** |
+| 선택 P1 비교·리뷰·자원·사용량 활용 묶음 | 22~37인일 추가 | 약 5~8 집중 주 추가 | 약 3~5 집중 주 추가 |
 
 이는 납기 약속이 아니라 범위 비교용 공수다. 기능 검증용 최소 클라이언트 구현은 포함하지만, 최종 UI·브랜드·캐릭터 디자인, 앱 스토어/entitlement 심사 대기, 외부 보안 검토 대기, 법무 검토, 운영 인프라 조달 시간은 제외한다. 개발자 1명 구성이어도 원격 암호·승인 경계에는 별도의 독립 보안 리뷰어가 필요하다.
 
@@ -153,7 +166,7 @@
 - `ORC-001` 사용자의 자동 분할 요청을 검토 가능한 Plan/Task DAG로 자동 제안
 - `ORC-002` DAG 실행, 의존성 검증, 동시성 한도
 - `ORC-003` 세션별 worktree 생성·상태 확인·보존
-- `ORC-004` 검증, 사용자 확인형 typed cherry-pick/merge/patch-export, 안전한 worktree 정리
+- `ORC-004` 로컬 관리자 등록 allowlisted template 검증, 사용자 확인형 typed cherry-pick/merge/patch-export, 안전한 worktree 정리
 - `APR-001`/`APR-002` 타입 승인과 구조화된 질문 응답
 - `API-001` aggregate revision과 idempotency를 강제하는 타입 API·event stream
 - `OBS-001` 작업·세션·브랜치 상관관계가 있는 구조화 이벤트
@@ -163,6 +176,7 @@
 - 순환 DAG 거부, 상위 실패 시 하위 작업 정책, 취소 전파
 - 동일 저장소를 사용하는 병렬 쓰기 작업의 파일·브랜치 격리
 - 미커밋 변경이 있는 worktree 정리 거부 및 복구 안내
+- Planner/원격 클라이언트의 verification template 등록·변경 거부와 allowlisted `verificationTemplateId`·typed argv/cwd/env policy 강제
 - typed 통합 mutation의 stale Worktree revision, 잘못된 대상 ref, 같은 idempotency key의 다른 payload 거부
 - Pawdex Approval ID/세션 ID/turn ID 교차 주입 거부
 - Session/Plan/Approval의 stale aggregate revision 거부와 동일 idempotency key 재시도 결과 고정
@@ -254,6 +268,7 @@
 
 - 비슷한 세션 이름, 활성 turn 없음, 여러 후보가 있는 명령의 확인 흐름
 - 낮은 STT confidence에서 자동 전송 금지
+- 모든 음성 mutation에서 전사문, 해석한 action과 정확한 Project/Session/Approval target을 함께 확인하고 모호하면 실행하지 않음
 - 잠금 화면/백그라운드/마이크 권한 철회 상태
 - 음성은 승인 화면 탐색과 `decline`/`cancel`까지만 허용하고 위험도와 무관하게 모든 Approval `accept`는 거부
 - 오디오 원본 보존 안 함 기본값과 진단 로그 redaction
@@ -289,6 +304,43 @@
 - 이전 베타로 되돌리는 절차와 로컬 데이터 마이그레이션 복구를 리허설했다.
 - 최소 두 명의 외부 사용자가 설치→첫 병렬 작업→알림→후속 지시를 문서만으로 완료한다.
 
+### Milestone 7 — 선택 P1 비교·리뷰·자원·사용량 활용
+
+예상 노력: **22~37인일**
+
+공수 구성: `ORC-005` 5~8인일, `REV-001` 4~7인일, `SES-004` 4~6인일, `OBS-002` 3~6인일, `ORC-006` 6~10인일. 공급자 usage 계약이나 세션 resume capability가 부족하면 각각의 상한을 다시 추정한다.
+
+선행 조건: Milestone 2와 Milestone 6. `ORC-006`의 canonical 의존성은 `OBS-002`, `ORC-002`, `ORC-004`, `CFG-001`, `ATT-001`, `APR-001`, `APR-002`, `SEC-001`, `DEV-001`, `DEV-002`이며 이 단계는 공개 MVP/P0 출시 조건이 아니다.
+
+핵심 에픽:
+
+- `ORC-005` 같은 동결 명세·base에서 제한된 수의 후보 attempt를 실행하고 결과를 수동 선택
+- `REV-001` line-anchored diff 코멘트 수집, stale 판정, 한 번의 구조화된 리뷰 turn 전달
+- `SES-004` 완료 turn·idle window·resumable 상태와 Session별 blocker 검사를 통과한 hibernation 및 warm/cold resume
+- `OBS-002` provider usage/rate-limit 출처·신선도 표시와 scheduler 입력
+- `ORC-006` 사전 저장 preset과 최신 usage snapshot을 사용하는 reset-window queue 실행·재예측·안전 중지
+
+필수 테스트:
+
+- 후보별 worktree·budget·attempt ID가 격리되고 서로 다른 base에서 시작한 결과는 같은 비교군으로 표시되지 않는지 검사
+- winner 선택 전 어떤 후보도 자동 통합되지 않으며 loser의 미커밋·미병합 결과가 자동 삭제되지 않는지 검사
+- base/head OID나 content hash가 달라진 line comment가 stale 처리되고 다른 줄에 조용히 적용되지 않는지 검사
+- 해당 Session에 pending Approval, unsettled attempt/subagent, active control lease가 있을 때 hibernation이 거부되고 daemon 재시작 뒤 복구되는지 검사
+- 오래되었거나 지원되지 않는 usage 값이 `unknown`/`stale`로 표시되며 하드 quota처럼 오인되지 않는지 검사
+- preset·queue·Project·usage snapshot의 stale revision 거부, 같은 idempotency key 재시도 결과 고정, reset 시각 변경 시 새 attempt launch 중지
+- 목표 범위·reserve·launch buffer·기존 RunBudget 중 가장 보수적인 상한을 적용하고, 큐 밖 filler·중복 Task·자동 credit/reset 소비·account switch가 생성되지 않는지 검사
+- 각 TaskAttempt 뒤 `min/likely/max` forecast가 갱신되며 target/queue empty/stale/blocker/failure/cost/cancel별 stop Attention이 정확히 한 번 생성되는지 검사
+- local controller와 paired remote 모두 actor Device ID/kind/channel과 foreground one-time user-presence receipt를 검증하고 loopback API·CLI·음성·push가 이를 우회하지 못하는지 검사
+- Queue priority/order의 결정적 scan과 typed skip reason을 보존하며 queue와 slot이 남아도 safe candidate와 기다릴 active governed Attempt가 없으면 `no_safe_candidate`로 즉시 한 번만 중단하는지 검사
+
+종료 조건:
+
+- 사용자는 동일 입력의 후보들을 diff·검증 결과와 함께 비교하고 typed action으로 winner만 선택할 수 있다.
+- 리뷰 코멘트는 code mutation이나 Approval 수락이 아니라 원래 세션의 새로운 피드백 turn으로만 전달된다.
+- hibernation은 논리 상태를 보존하면서 프로세스 자원 연결만 해제하며, 복원 불가 시 명시적인 cold-restore 상태와 다음 행동을 제공한다.
+- usage 데이터가 없거나 오래돼도 scheduler는 안전한 로컬 동시성·RunBudget 상한을 계속 적용한다.
+- `UsageWindowRun`은 이미 confirmed/frozen 상태의 preset queue만 실행하고, 정확한 소진 대신 사용자 목표 범위와 안전 중지 이유를 감사 가능한 summary로 남긴다.
+
 ## 5. 우선순위 백로그
 
 | ID | 우선순위 | 기능 | 선행 조건 | 목표 단계 | 핵심 수용 기준 |
@@ -307,8 +359,12 @@
 | `ORC-001` | P0 | 자동 작업 분해·Plan 제안 | `PROJ-001`, `SES-002`, `CFG-001` | M2 | P0 Plan은 사용자 confirm 전 쓰기 작업을 시작하지 않는다 |
 | `ORC-002` | P0 | DAG scheduler | `ORC-001` | M2 | 순환·고아 노드가 실행 전에 거부된다 |
 | `ORC-003` | P0 | Git worktree 격리 | `ORC-002`, `PROJ-001` | M2 | 미커밋 worktree를 자동 삭제하지 않는다 |
-| `ORC-004` | P0 | 검증·typed 통합·정리 | `ORC-003` | M2 | 사용자 확인형 cherry-pick/merge/patch-export만 허용하고 stale/dirty 상태를 막는다 |
+| `ORC-004` | P0 | allowlisted 검증·typed 통합·정리 | `ORC-003` | M2 | 로컬 관리자 template와 typed 인자만 실행하고 사용자 확인형 통합에서 stale/dirty 상태를 막는다 |
+| `ORC-005` | P1 | 동일 명세 후보 비교 실행 | `ORC-004` | M7 | 동일 frozen spec/base와 후보 budget을 보장하고 winner만 사람이 선택한다 |
+| `ORC-006` | P1 | Usage Window queue run | `OBS-002`, `ORC-002`, `ORC-004`, `CFG-001`, `ATT-001`, `APR-001`, `APR-002`, `SEC-001`, `DEV-001`, `DEV-002` | M7 | fresh bucket·immutable preset·expected revisions·actor/channel-bound user-presence receipt에 결박하고 매 attempt 재예측하며 `no_safe_candidate`를 포함한 모든 안전 상한에서 중지한다 |
+| `REV-001` | P1 | line-anchored batched review | `ORC-004` | M7 | OID·side·line·content hash로 stale을 감지하고 한 turn으로 전달한다 |
 | `OBS-001` | P0 | 감사 로그·진단 | `API-001` | M2→M6 | 결정을 추적하되 fixture secret은 남지 않는다 |
+| `OBS-002` | P1 | provider usage·rate-limit 가시성 | `SYS-002`, `OBS-001`, `SES-002`, `CFG-001` | M7 | 출처·관측 시각·신선도·unknown을 표시하고 stale/unknown이면 scheduler가 로컬 hard cap으로 fail-safe하며 계정 전환은 제공하지 않는다 |
 | `ATT-001` | P0 | 통합 Attention Inbox | `SES-003`; 응답 action은 `APR-001` | M2→M3 | 미처리 요청의 최신 유효 상태를 보존한다 |
 | `ATT-002` | P0 | dedup·quiet hours·escalation | `ATT-001` | M3 | 동일 이벤트는 한 번만 울리고 해결 시 예약을 취소한다 |
 | `NTF-001` | P0 | Mac·모바일 알림 채널 | `ATT-001` (M3 로컬); `DEV-001`, `SEC-001` (M4 원격) | M3→M4 | Mac은 로컬 projection, mobile push는 opaque wake 뒤 E2EE fetch만 사용한다 |
@@ -319,13 +375,27 @@
 | `VOI-001` | P0 | push-to-talk·전사 | `SEC-001` | M5 | 녹음 상태와 원본 미보존 기본값이 명확하다 |
 | `VOI-002` | P0 | 음성 의도·Session/질문 라우팅 | `VOI-001`, `API-001`, `APR-002` | M5 | 대상·의미를 확인하고 pending 사용자 질문 answer를 원 Approval에만 제출한다 |
 | `VOI-003` | P1 | 안전한 상태 TTS | `VOI-002` | M5 | 코드·secret·명령 전문을 읽지 않는다 |
+| `SES-004` | P1 | 안전한 hibernation·resume | `SES-001`, `REL-001`, `APR-001`, `ATT-001`, `ORC-002`, `DEV-002` | M7 | Session별 control lease·Approval·attempt/subagent blocker를 검사하고 상태와 process attachment를 분리한다 |
 | `OSS-001` | P0 | 오픈소스·확장 계약 | 없음 | M1→M6 | 새 checkout 재현성과 서명 검증을 제공한다 |
 
-### 제품 요구 추적: local CLI/API
+### 제품 요구 추적
 
 | 제품 요구 | canonical 기능 | 구현 단계 | 출시 증거 |
 |---|---|---|---|
+| `PRODUCT_BRIEF` JTBD-01 완료·입력 필요를 놓치지 않음 | `ATT-001`, `ATT-002`, `NTF-001`, `NTF-002` | M2→M4 | 상태→Attention 1:1 추적, dedupe·quiet-hours·opaque push 테스트 |
+| `PRODUCT_BRIEF` JTBD-02 음성으로 정확한 다음 지시 | `VOI-001`, `VOI-002`, `APR-002` | M5 | 대상·의도 확인, 낮은 confidence 차단, 원 질문 결박 테스트 |
+| `PRODUCT_BRIEF` JTBD-03 큰 작업의 안전한 병렬 분할 | `SES-002`, `ORC-001`~`ORC-004` | M1→M2 | frozen Plan, resource lease, worktree 격리, artifact·OID·budget gate 테스트 |
+| `PRODUCT_BRIEF` JTBD-04 승인 안전 처리 | `APR-001`, `APR-002`, `SEC-001` | M2→M4 | request/attempt/device 결박, stale revision, 인증 UI confirmation 테스트 |
+| `PRODUCT_BRIEF` JTBD-05 단절 뒤 신뢰 가능한 복구 | `REL-001`, `DEV-002` | M1→M4 | journal replay, snapshot, ACK/retry, offline reconciliation 테스트 |
 | `PRODUCT_BRIEF` JTBD-06 및 P0의 “이벤트 WebSocket/HTTP API와 로컬 CLI” | `API-001`, `OSS-001` | M1에서 generated local CLI client·기본 API, M2에서 approval/Plan/event stream 확장, M6에서 재현 가능한 배포 | `FEATURE_SPEC`의 `API-001` CLI 인수 기준, schema/contract/fuzz 테스트, 새 checkout build/test |
+| `PRODUCT_BRIEF` JTBD-07 동일 작업의 여러 후보 비교·선택 | `ORC-005` | M7 선택 P1 | 동일 frozen spec/base 증거, 후보별 검증 결과, 수동 winner audit event |
+| `PRODUCT_BRIEF` JTBD-08 diff 줄 단위 피드백 묶음 전달 | `REV-001` | M7 선택 P1 | stale anchor 테스트, batched feedback turn, Approval 경계 테스트 |
+| `PRODUCT_BRIEF` JTBD-09 reset 전 선택 큐 활용 | `ORC-006`, `OBS-002` | M7 선택 P1 | fresh snapshot·forecast band·preset fence·stop matrix·no-filler/no-auto-credit 테스트 |
+| `PRODUCT_BRIEF` P1 완료 Session 자원 절감 | `SES-004` | M7 선택 P1 | blocker matrix, warm/cold resume, restart recovery 테스트 |
+| `PRODUCT_BRIEF` P1 provider 사용량 가시성 | `OBS-002` | M7 선택 P1 | source/freshness/unknown 표기와 scheduler fail-safe 테스트 |
+| 공통 개발자·비개발자 UX 품질 | `NFR-UX-001`, `NFR-A11Y-001` | M1부터 모든 UI 단계 | plain-language walkthrough, progressive-disclosure, keyboard/screen-reader/44px/non-color audit |
+| 정직한 상태·사용량 표현 | `NFR-UX-002`, `SES-003`, `OBS-002`, `ORC-006` | M1 상태 UI, M7 usage UI | lifecycle evidence·forecast audit와 근거 없는 완료율/token 잔량/100% 소진 문구 0건 |
+| 음성 오발송 방지 | `NFR-VOICE-001`, `VOI-002` | M5 | 전사문·action·target 확인과 ambiguous/low-confidence 차단 테스트 |
 
 ## 6. 테스트 전략과 품질 게이트
 

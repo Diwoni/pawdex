@@ -8,7 +8,7 @@
 >
 > 정규 계약: [PROTOCOL.md](./PROTOCOL.md)
 >
-> 제외 범위: UI 구조, 비주얼, 고양이 캐릭터 표현, 브랜드·카피의 최종안은 디자인 단계로 미룬다.
+> 제품 UX 기준: 화면 동작과 정보 구조는 [Figma의 `Pawdex — Product UX` 페이지](https://www.figma.com/design/24X7ul4Vb9aTKZXpSY0OL3/pinpop?node-id=2290-2)를 구현 기준으로 사용한다. 색·타이포그래피·고양이 표현 같은 시각 브랜드의 최종안은 사용성·접근성 검증에 따라 발전할 수 있다.
 
 ## 1. 문서 목적
 
@@ -35,6 +35,19 @@
 ### 2.3 안정 ID
 
 요구사항 ID는 문구가 바뀌어도 재사용하지 않는다. 폐기된 ID는 `deprecated`로 남기고 새로운 의미에 재할당하지 않는다.
+
+| 접두사 | 기능 영역 |
+| --- | --- |
+| `SYS` / `DEV` / `PROJ` | 로컬 런타임, 기기·연결, Project 경계 |
+| `SES` | Session 수명주기·병렬 실행·상태·hibernation |
+| `ATT` / `NTF` | Attention과 알림·감각 피드백 |
+| `APR` | typed Approval과 사용자 질문 |
+| `VOI` | 음성 입력·의도·TTS |
+| `ORC` | Plan/Task DAG, resource·budget·worktree·통합·후보 비교·usage window 실행 |
+| `REV` | 코드 리뷰 피드백과 수정 Turn 연결 |
+| `REL` / `SEC` / `API` | 복구, 보안, 공개 계약 |
+| `OBS` / `CFG` / `OSS` | 관측성·provider usage, 설정, 오픈소스 배포 |
+| `NFR` | 성능·신뢰성·보안·개인정보·호환성·UX·접근성 등 횡단 품질 |
 
 ## 3. 공통 상태와 불변식
 
@@ -77,7 +90,7 @@ Turn은 별도로 `queued`, `running`, `needs_input`, `succeeded`, `failed`, `in
 | `acknowledged` | 사용자가 내용을 확인했지만 응답하지 않음 |
 | `resolved` | 연결된 Approval 또는 완료·실패 사건의 의미가 해소됨 |
 
-Attention의 정규 상태는 `open`, `acknowledged`, `resolved` 세 가지다. 질문·승인의 응답 수명 주기는 별도 Approval aggregate의 `pending`, `responding`, `accepted`, `declined`, `cancelled`, `expired`로 표현한다. `responding`은 전송 성공을 뜻하지 않으며 authoritative `serverRequest/resolved` 또는 그에 준하는 이벤트를 받은 뒤에만 Approval의 최종 상태와 Attention의 `resolved`를 확정한다.
+Attention의 정규 상태는 `open`, `acknowledged`, `resolved` 세 가지다. Attention target은 Session뿐 아니라 Plan, Task, Queue, Worktree 중 정확히 하나일 수 있어야 한다. 질문·승인의 응답 수명 주기는 별도 Approval aggregate의 `pending`, `responding`, `accepted`, `declined`, `cancelled`, `expired`로 표현한다. Pawdex가 만든 사람 확인 gate는 별도 Checkpoint aggregate의 `pending`, `satisfied`, `declined`, `expired`, `cancelled`로 표현한다. `responding`은 전송 성공을 뜻하지 않으며 authoritative `serverRequest/resolved` 또는 그에 준하는 이벤트를 받은 뒤에만 Approval의 최종 상태와 Attention의 `resolved`를 확정한다.
 
 ### 3.4 시스템 불변식
 
@@ -85,11 +98,17 @@ Attention의 정규 상태는 `open`, `acknowledged`, `resolved` 세 가지다. 
 - 하나의 App Server request ID에는 최대 하나의 성공 응답만 적용한다.
 - 모든 정규 이벤트에는 `eventId`, daemon database 범위의 `sequence`, `occurredAt`, aggregate type/ID/revision이 있다. 관련 `machineId`·`sessionId`는 payload 또는 projection으로 연결한다.
 - `sequence`는 event ordering과 cursor에만 사용하며 mutation 충돌 검증에는 사용하지 않는다.
-- Session, Plan, Approval 같은 mutable aggregate는 각각 1씩 증가하는 `revision`을 갖고 mutation은 대응하는 `expected...Revision`을 검증한다.
+- Session, Plan, Approval, Dispatch 같은 mutable aggregate는 각각 1씩 증가하는 `revision`을 갖고 mutation은 대응하는 `expected...Revision`을 검증한다.
 - 모든 mutation은 aggregate revision과 별개로 `Idempotency-Key`를 요구한다.
 - 같은 notification dedup key로 같은 기기에 두 번 울리지 않는다.
 - 원격 API는 사용자가 입력한 문자열을 임의 셸로 실행하는 기능을 제공하지 않는다.
 - 쓰기 가능한 병렬 Task는 같은 working directory를 공유하지 않는다.
+- confirmed Plan은 ProjectPolicy보다 넓지 않은 유한 RunBudget을 가지며 hard cap을 넘긴 새 dispatch는 없다.
+- TaskAttempt는 세 scope 실행 lease와 선언한 shared/exclusive resource claim을 모두 획득한 뒤에만 시작한다.
+- runtime completion·heartbeat·Artifact·VerificationResult·lease release는 현재 TaskAttempt/Dispatch pair가 일치할 때만 상태를 바꾼다.
+- downstream Task는 frozen Plan에 선언된 artifact materialization만 받으며 다른 Session의 전체 대화를 자동 상속하지 않는다.
+- actual changed files가 frozen write scope를 벗어나면 Task와 Plan을 block하고 범위를 자동 확장하지 않는다.
+- required verification과 integration은 사용자가 본 정확한 source tree/commit OID와 target OID에 결박한다.
 - 파괴적 또는 elevated 승인의 수락은 잠금 해제된 인증 UI의 명시적 action 없이는 실행되지 않는다. 음성·알림 quick action은 이를 대신할 수 없다.
 
 ## 4. 기능 요구사항
@@ -217,6 +236,7 @@ Attention의 정규 상태는 `open`, `acknowledged`, `resolved` 세 가지다. 
 4. remote projection에는 전체 절대 경로 대신 `rootPathDisplay`처럼 redaction된 표시 경로를 반환할 수 있어야 한다.
 5. ProjectPolicy는 허용 execution mode, P0 managed-worktree 강제, global/Machine/Project 동시성 중 Project 한도와 needs-input slot 정책, 모델 allowlist, `approvalsReviewer=user`, mode별 read-only/workspace-write sandbox, session-scope·exec/network amendment·network/out-of-root allowlist 제한을 typed 필드로 포함해야 한다.
 6. ProjectPolicy 변경은 `expectedProjectRevision`과 `Idempotency-Key`를 요구하고 기존 실행의 effective policy를 소급 변경하지 않아야 한다.
+7. verification template의 생성·수정·삭제는 잠금 해제된 local-admin UI에서만 허용하고 version/digest에 결박된 confirmation receipt를 요구해야 한다. template은 shell/command interpreter가 아닌 고정 executable, command-text/eval slot 없이 literal/typed slot만 있는 argv template, cwd와 `inherit=false` env allowlist를 가져야 한다. Planner·Session·remote client는 기존 `verificationTemplateId`와 schema가 허용한 typed args만 선택할 수 있고 executable, raw argv fragment, cwd, 환경 변수 이름·값 또는 secret reference를 만들거나 바꿀 수 없어야 한다.
 
 용어 규칙:
 
@@ -228,6 +248,8 @@ Attention의 정규 상태는 `open`, `acknowledged`, `resolved` 세 가지다. 
 - [ ] remote 기기가 새 절대 경로 또는 `cwd`를 보내 Project/Session을 만들 수 없다.
 - [ ] symlink를 이용한 workspace root 또는 허용된 하위 경계 탈출이 차단된다.
 - [ ] stale `expectedProjectRevision` 정책 변경은 `STATE_CONFLICT`이고 같은 idempotency key 재시도는 최초 결과를 반환한다.
+- [ ] Planner·원격 client가 verification executable, shell command, cwd 또는 env를 제출하면 upstream/process 실행 전에 거부된다.
+- [ ] local-admin template 등록도 shell/command interpreter, command-text/eval slot 또는 raw argv fragment를 포함하면 거부된다.
 
 ### SES-001 — Session 생성, 재개, 분기, 중단
 
@@ -271,6 +293,9 @@ Attention의 정규 상태는 `open`, `acknowledged`, `resolved` 세 가지다. 
 4. rate limit 또는 usage limit 오류 시 모든 세션을 무한 재시도하지 않고 관련 scope의 queue를 pause해야 한다.
 5. 사용자는 queued, running, paused와 pause 원인을 조회할 수 있어야 한다.
 6. 하나의 Session 실패가 독립 Session을 중단시키지 않아야 한다.
+7. daemon은 자신이 생성한 process의 PID, start identity, owner Session/TaskAttempt, 공유 여부를 registry에 기록해야 하며 이름 검색이나 PID 재사용 추정으로 process를 종료하지 않아야 한다.
+8. runtime/item/command/Approval lifecycle처럼 검증 가능한 activity 시각과 TaskAttempt health(`healthy`, `suspected_stall`, `stalled`)를 Session 상태와 분리해야 한다. stall threshold만으로 성공·실패를 추정하거나 process를 강제 종료하지 않아야 한다.
+9. interrupt 또는 hard wall-time cap 도달 시 먼저 typed turn interrupt와 grace period를 적용해야 한다. 이후에도 종료되지 않으면 해당 Attempt가 독점 소유하며 PID/start identity가 일치하는 managed process tree만 종료할 수 있고, 공유 App Server나 소유 불명 process 종료는 별도 로컬 확인 없이는 금지해야 한다.
 
 인수 기준:
 
@@ -278,6 +303,8 @@ Attention의 정규 상태는 `open`, `acknowledged`, `resolved` 세 가지다. 
 - [ ] 하나의 App Server 요청이 실패해도 무관한 Session은 계속 진행한다.
 - [ ] daemon 재시작 뒤 global/Machine/Project queue의 순서, pause reason, lease, idempotency가 보존되고 같은 operation이 중복 실행되지 않는다.
 - [ ] 한 Project queue의 pause 또는 한도 도달이 다른 Project의 여유 slot 실행을 막지 않으며 global/Machine 한도는 두 Project에 함께 적용된다.
+- [ ] stall fixture는 TaskAttempt health와 Task target Attention만 바꾸고 Session/Task를 성공 또는 실패로 추정하지 않는다.
+- [ ] PID 재사용·공유 App Server·다른 Session process fixture에서 강제 종료가 거부된다.
 
 ### SES-003 — 상태 reducer와 진행 정보
 
@@ -299,29 +326,53 @@ Attention의 정규 상태는 `open`, `acknowledged`, `resolved` 세 가지다. 
 - [ ] 순서가 뒤바뀐 이전 turn 완료 이벤트가 현재 turn을 `completed`로 바꾸지 않는다.
 - [ ] pending Approval이 있는 동안 unrelated progress event가 `needs_input`을 덮지 않는다.
 
+### SES-004 — 안전한 hibernation과 warm-resume
+
+**우선순위:** P1
+
+**목표:** 오래 쉬는 Session의 runtime attachment와 resident resource를 해제하되 대화·작업 상태를 잃거나 진행 중 작업을 잠든 것으로 오판하지 않는다.
+
+요구사항:
+
+1. canonical Session 상태와 별도로 attachment 상태(`attached`, `hibernating`, `hibernated`, `resuming`)와 resource residency를 표현해야 한다. `hibernated`는 `completed`, `failed`, `interrupted`, `ready`를 대신하는 Session 상태가 아니다.
+2. hibernation은 active turn, pending blocking/nonblocking Approval, unresolved Checkpoint, unsettled TaskAttempt/Dispatch, active ResourceLease, 미전송 secret answer가 하나라도 있으면 거부해야 한다.
+3. 모바일 클라이언트가 foreground에서 해당 Session을 drive하는 짧은 수명의 control lease가 있거나 음성/텍스트 mutation이 처리 중이면 hibernation을 시작하지 않아야 한다.
+4. hibernation은 Codex thread ID, journal, worktree, artifact, Attention을 보존하고 runtime attachment와 안전하게 해제 가능한 resident resource만 반납해야 한다. worktree cleanup이나 branch 삭제를 암묵적으로 수행하지 않는다.
+5. warm-resume은 새 thread/turn을 blind-create하지 않고 기존 thread를 resume/read한 뒤 authoritative status와 pending request를 reconcile해야 한다. reconcile 전에는 입력을 보내거나 lease를 중복 발급하지 않는다.
+6. 자동 inactivity 정책은 사용자 설정과 최소 유휴 시간을 가져야 하며, 실패하면 Session을 `offline` 또는 명시적 진단 상태로 두고 기록을 삭제하지 않아야 한다.
+
+인수 기준:
+
+- [ ] `completed` Session을 hibernate/resume한 뒤 동일 thread와 마지막 turn이 유지되고 새 turn이 생성되지 않는다.
+- [ ] pending Approval, unsettled Attempt, active mobile control lease 각각에서 hibernation이 거부된다.
+- [ ] resume 도중 daemon을 kill해도 attachment/resource reconcile 후 하나의 authoritative 상태로 수렴한다.
+
 ## 4.4 Attention Inbox와 알림
 
 ### ATT-001 — 통합 Attention Inbox
 
 **우선순위:** P0
 
-**목표:** 모든 Session의 사람 개입 항목을 손실 없이 한곳에 모은다.
+**목표:** Session뿐 아니라 병렬 실행 Plan·Task·Queue·Worktree의 사람 개입 항목을 손실 없이 한곳에 모은다.
 
 요구사항:
 
-1. durable Attention은 `needs_input`, `failed`, `completed`, `reconciliation_required` kind로 생성해야 한다. 알림은 Session 상태를 직접 구독하지 않고 이 aggregate를 원천으로 삼아야 한다.
-2. Attention은 ID, session ID, kind, `open`/`acknowledged`/`resolved` 상태, title, 안전한 preview, 생성 시각, aggregate revision을 포함해야 한다. machine/project/turn과 risk는 연결 projection으로 조회하고 upstream request ID를 노출하지 않는다.
+1. durable Attention은 기존 `needs_input`, `failed`, `completed`, `reconciliation_required`와 orchestration kind인 `task_blocked`, `plan_blocked`, `checkpoint_required`, `integration_required`, `budget_exhausted`, `queue_paused`, `resource_wait_timeout`, `stalled`를 지원해야 한다. P1 ORC-006 capability가 활성화되면 `usage_window_run_stopped`도 지원한다. 알림은 Session/Task 상태를 직접 구독하지 않고 이 aggregate를 원천으로 삼아야 한다.
+2. Attention은 ID, `Session | Plan | Task | Queue | Worktree` 중 정확히 하나인 typed target, Approval/Turn/Checkpoint/RunBudget/ResourceLease/Verification/System 중 typed source, kind, `open`/`acknowledged`/`resolved` 상태, title, 안전한 preview, 생성 시각, aggregate revision을 포함해야 한다. P1 stop summary source에는 UsageWindowRun을 추가한다. machine/project/risk는 연결 projection으로 조회하고 upstream request ID를 노출하지 않는다.
 3. 기본 정렬은 파생 risk와 연결된 Approval expiry를 우선한 뒤 생성 시각을 사용해야 한다.
 4. 질문·승인 Attention은 Approval이 해결되기 전 dismiss 또는 resolved 처리할 수 없다. P0의 사용자 동작은 acknowledge이며 snooze는 notification policy의 후속 확장으로 둔다.
-5. 완료 Attention은 사용자가 열면 `acknowledged`, 새 turn으로 의미가 사라지면 `resolved` 처리해야 한다.
+5. 완료 Attention은 사용자가 열면 `acknowledged`, 새 turn으로 의미가 사라지면 `resolved` 처리해야 한다. orchestration Attention은 Checkpoint terminal, Queue resume, replacement Plan confirm, resource/scope/integration blocker 해소 같은 authoritative 원인 이벤트 전에는 resolved 처리하지 않아야 한다. P1 `usage_window_run_stopped` summary는 사용자가 열어도 acknowledged일 뿐이며 같은 preset의 새 인증 Run이 시작될 때 resolved할 수 있다.
 6. 여러 기기가 같은 Attention을 열어도 연결된 Approval의 `pending`/`responding`/최종 상태를 실시간 동기화해야 한다.
 7. 원 요청이 사라지면 Approval을 `expired`, 연결된 Attention을 `resolved`로 바꾸고 늦은 응답을 보내지 않아야 한다.
+8. Session이 아직 없는 pre-dispatch 실패도 Plan/Task target으로 생성해야 하며, target-kind 허용 조합 밖 입력은 schema에서 거부해야 한다.
 
 인수 기준:
 
 - [ ] 3개 Session에서 동시에 질문·실패·완료가 발생하면 서로 다른 Item 3개가 생긴다.
 - [ ] 한 기기가 응답을 시작하면 다른 기기에 연결된 Approval의 `responding` 상태가 반영된다.
 - [ ] App Server가 요청을 먼저 정리한 경우 모바일의 늦은 승인에 `APPROVAL_EXPIRED`가 반환된다.
+- [ ] Plan validation 실패, budget exhaustion, fan-in 충돌, queue pause가 각각 Session 없이도 올바른 target/source의 Item을 한 번 생성한다.
+- [ ] acknowledge만으로 Checkpoint, Task blocker, Queue pause 또는 integration gate가 해결되지 않는다.
 
 ### ATT-002 — 알림 정책, dedup, quiet hours, escalation
 
@@ -332,7 +383,7 @@ Attention의 정규 상태는 `open`, `acknowledged`, `resolved` 세 가지다. 
 요구사항:
 
 1. notification dedup key는 최소 `deviceId + attentionId + policyRevision + stage`로 계산해야 한다.
-2. 기본 정책은 `needs_input`과 `failed`를 즉시, `completed`를 즉시 또는 사용자가 선택한 digest로 전송해야 한다.
+2. 기본 정책은 `needs_input`, `failed`, `task_blocked`, `plan_blocked`, `checkpoint_required`, `integration_required`, `budget_exhausted`, `stalled`를 즉시, `completed`를 즉시 또는 사용자가 선택한 digest로 전송해야 한다. `queue_paused`와 `resource_wait_timeout`은 동일 target/reason을 정책적으로 묶을 수 있다.
 3. quiet hours에는 기본적으로 소리를 끄고 Item을 보존한다. 사용자가 허용한 risk level만 quiet hours를 우회할 수 있다.
 4. 해결되지 않은 Item은 사용자 설정 지연 후 제한적으로 escalation할 수 있다.
 5. escalation은 횟수 상한, 최소 간격, delivery TTL을 가져야 하며 모든 전송 기기에서 이미 확인되면 중단해야 한다.
@@ -549,21 +600,27 @@ Attention의 정규 상태는 `open`, `acknowledged`, `resolved` 세 가지다. 
    - plan ID와 목표
    - Task ID, 이름, 상세 instruction, mode(`read_only`/`write`)
    - 의존 Task ID 목록
-   - 예상 read/write scope
-   - 등록된 `projectId`, base Git revision, 실행 정책
-   - 완료 조건과 검증 명령의 선언형 목록
-   - 예상 위험, 사람 확인 지점, 결과 전달 계약
-3. 실행 전 cycle, 존재하지 않는 dependency, write scope 중복, 동시성·예산 초과를 검사해야 한다.
+   - 예상 read/write scope와 Task별 execution profile
+   - 등록된 `projectId`, exact base Git revision, 실행 정책과 RunBudget
+   - typed shared/exclusive ResourceClaim descriptor; canonical key와 acquisition order는 daemon이 계산
+   - 완료 조건과 사전 등록된 verification template ID·typed args의 선언형 목록
+   - 예상 위험, durable typed Checkpoint spec, 결과 전달·materialization 계약
+3. 실행 전 cycle, 최대 DAG depth/task 수, 존재하지 않는 dependency, write scope 중복, 동시성·RunBudget ceiling, resource acquisition order, checkpoint, artifact producer/consumer·commit OID를 검사해야 한다.
 4. P0는 제안된 Plan을 사용자가 confirm한 뒤에만 쓰기 Task를 시작해야 한다.
 5. 승인된 Plan aggregate revision은 실행 중 묵시적으로 바뀌지 않아야 한다. 변경은 새 revision과 diff를 만든다.
-6. Planner가 만든 검증 명령도 raw remote shell이 아니라 ProjectPolicy에 허용된 command template 또는 typed approval을 거쳐야 한다.
+6. Planner는 잠금 해제된 local-admin UI가 미리 ProjectPolicy에 등록한 `verificationTemplateId`와 schema가 허용한 typed args만 선택할 수 있어야 한다. typed approval로 임의 검증 명령을 우회하거나 template의 executable/argv/cwd/env policy를 생성·수정할 수 없어야 한다.
 7. Plan confirm은 `expectedPlanRevision`과 `Idempotency-Key`를 요구하고, 사용자가 본 revision과 다르면 어떤 Task도 시작하지 않아야 한다.
+8. RunBudget은 `maxTasks`, `maxDepth`, `maxAttemptsPerTask`, `maxWallTimeMs`, `maxResidentRuntimes`, `maxOutputBytes`, `maxWorktreeBytes`의 양의 유한 hard cap을 가져야 한다. runtime이 신뢰 가능한 usage를 제공할 때만 `maxTokens`, `maxCostMicros`를 유한 hard cap으로 허용하며, 지원하지 않으면 `null`과 `unavailable`을 명시하고 보장한다고 표시하지 않아야 한다.
+9. Task의 execution profile은 ProjectPolicy에 등록된 planner/worker/verifier/integrator profile 중 하나를 가리키고 model/tool/MCP/network 범위를 넓힐 수 없어야 한다.
 
 인수 기준:
 
 - [ ] cycle 또는 없는 dependency가 있는 Plan은 어떤 Task도 실행하지 않는다.
 - [ ] 계획 승인 전에 파일 쓰기 turn 또는 worktree를 만들지 않는다.
-- [ ] 실행 중 계획 변경은 기존 revision의 실행 기록을 보존한다.
+- [ ] 실행 중 Plan은 묵시적으로 바뀌지 않으며, blocker 뒤 새 revision으로 재계획해도 기존 Attempt/worktree/result 기록을 보존한다.
+- [ ] Project ceiling보다 넓은 budget, 무한값, runtime이 계측하지 못하는 token/cost cap은 validation에서 거부된다.
+- [ ] ResourceClaim 순서, Checkpoint schema, execution profile 또는 artifact materialization이 유효하지 않으면 Plan을 freeze할 수 없다.
+- [ ] draft verification input이 current ProjectPolicy의 exact template version/digest로 resolve되지 않았거나 resolve 뒤 policy revision이 바뀌면 Plan을 freeze/dispatch할 수 없다.
 
 ### ORC-002 — DAG scheduler
 
@@ -571,7 +628,7 @@ Attention의 정규 상태는 `open`, `acknowledged`, `resolved` 세 가지다. 
 
 **목표:** 의존성과 자원 한도에 따라 준비된 Task를 병렬 실행한다.
 
-Plan 상태는 `draft`, `proposed`, `editing`, `validated`, `frozen`, `confirmed`, `running`, `blocked`, `succeeded`, `failed`, `cancelled`를 사용한다. 확인 전 node는 Plan 문서의 정의일 뿐 실행 Task 상태 `planned`를 만들지 않는다. 수정은 기존 validation/freeze를 무효화하며, `confirmed` 전에는 실행 Task를 dispatch할 수 없다.
+Plan 상태는 `draft`, `proposed`, `editing`, `validated`, `frozen`, `confirmed`, `running`, `blocked`, `succeeded`, `failed`, `cancelled`를 사용한다. 확인 전 node는 Plan 문서의 정의일 뿐 실행 Task 상태 `planned`를 만들지 않는다. 수정은 기존 validation/freeze를 무효화하며, `confirmed` 전에는 실행 Task를 dispatch할 수 없다. 안전한 재계획은 `blocked → editing → validated → frozen → confirmed`를 사용하고 기존 Attempt와 결과를 삭제하지 않는다.
 
 확인 후 생성·실행되는 Task 상태는 `queued`, `ready`, `dispatching`, `running`, `needs_input`, `blocked`, `succeeded`, `failed`, `cancelled`만 사용한다.
 
@@ -579,10 +636,10 @@ Plan 상태는 `draft`, `proposed`, `editing`, `validated`, `frozen`, `confirmed
 | --- | --- |
 | `queued` | Plan이 확인되었지만 성공해야 할 dependency가 아직 남음 |
 | `ready` | dependency가 모두 성공했고 concurrency slot을 기다리거나 바로 시작 가능 |
-| `dispatching` | slot과 lane lease를 확보하고 operation/worktree/Session을 durable하게 예약하는 중 |
+| `dispatching` | 세 scope slot과 typed resource lease를 확보하고 operation/worktree/Session을 durable하게 예약하는 중 |
 | `running` | 연결된 Session turn이 실행 중 |
 | `needs_input` | 연결된 Session/Approval이 사용자 입력을 기다림 |
-| `blocked` | 선행 실패, 정책 충돌, reconciliation 문제 등으로 자동 진행 불가 |
+| `blocked` | 선행 실패, materialization/scope/resource/budget/checkpoint/정책/reconciliation 문제로 자동 진행 불가 |
 | `succeeded` | Task 결과 계약과 검증을 통과함 |
 | `failed` | 실행 또는 검증이 실패함 |
 | `cancelled` | 사용자 또는 Plan 취소로 더 실행하지 않음 |
@@ -592,19 +649,32 @@ Worktree 통합은 `worktree.integrated`와 Worktree projection으로 추적한�
 요구사항:
 
 1. 모든 dependency가 `succeeded`인 Task만 `ready`가 된다. 통합이 선행 조건이면 integration Task의 `succeeded`에 의존한다.
-2. scheduler는 Machine/Project concurrency와 Task priority를 동시에 적용해야 한다.
+2. scheduler는 global/Machine/Project concurrency, RunBudget, Task priority, ResourceClaim을 동시에 적용해야 한다.
 3. 선행 Task 실패 시 후속 Task는 기본적으로 `blocked`가 되며 사용자 선택 없이 계속 실행하지 않는다.
-4. 재시도는 Task attempt ID를 새로 만들고 이전 Session, worktree, 결과를 보존해야 한다.
+4. 재시도는 TaskAttempt와 실제 runtime 전달을 식별하는 Dispatch ID를 모두 새로 만들고 이전 Session, worktree, 결과를 보존해야 한다.
 5. 취소는 실행 중 Task의 turn을 interrupt하고 아직 시작하지 않은 후속 Task를 cancel하되, worktree를 자동 삭제하지 않아야 한다.
-6. 결과 계약에는 summary, changed files, verification result, artifacts, source session/turn ID가 포함되어야 한다.
+6. 결과 계약에는 summary, actual changed files, exact source/result tree OID, verification result, artifacts, source session/turn ID, producer TaskAttempt/Dispatch pair, ContextPackage와 RunManifest reference가 포함되어야 한다.
 7. planner와 executor를 같은 세션으로 강제하지 않고 목적에 따라 새 thread 또는 fork를 선택할 수 있어야 한다.
 8. retry/unblock/cancel 같은 Task mutation은 `expectedTaskRevision`과 `Idempotency-Key`를 검증해야 한다.
+9. shared/exclusive ResourceClaim은 daemon이 typed descriptor에서 canonical key를 계산해야 한다. `(resource kind, canonical key, claim id)` 전역 순서로 한 Attempt의 모든 resource와 세 scope queue lease를 원자적으로 획득하거나 모두 포기하며, shared/shared만 공존시켜야 한다.
+10. ResourceLease는 heartbeat·TTL·revision을 가지며 daemon 재시작 뒤 실제 managed Attempt/resource와 reconcile하기 전 재발급하지 않아야 한다. 대기 상한을 넘으면 Task target `resource_wait_timeout` Attention을 만들되 다른 Task의 lease를 강제 해제하지 않아야 한다.
+11. RunBudget usage는 source event/provider sample ID로 멱등 누적해야 한다. hard cap에 도달하면 새 dispatch를 중단하고 Plan을 `blocked`, budget을 `exhausted`로 만들며 Plan target `budget_exhausted` Attention을 생성해야 한다.
+12. frozen Checkpoint trigger에 도달하면 durable Checkpoint를 `pending`으로 만들고 Task/Plan 진행을 막아야 한다. 응답은 `expectedCheckpointRevision`과 `Idempotency-Key`를 요구하며 high-risk continue는 잠금 해제된 인증 UI receipt 없이는 실행하지 않아야 한다.
+13. worker/runtime 시작 전에 instruction source와 content hash, artifact ref, profile/policy/runtime version, TaskAttempt/Dispatch pair와 base/source tree OID를 각각 immutable ContextPackage와 RunManifest로 기록해야 한다. 다른 Session의 전체 대화와 secret answer는 자동 전달하지 않아야 한다.
+14. scheduler는 operation, 새 TaskAttempt/Dispatch, queue/resource lease와 budget debit을 journal transaction에 먼저 commit한 뒤에만 worker/runtime를 시작해야 한다. 각 runtime observation, heartbeat, completion, Artifact, VerificationResult, lease release는 current Attempt/Dispatch pair를 요구하고 stale pair는 canonical 상태·자원·통합을 바꾸지 않아야 한다.
+15. upstream ID를 응답에서 얻기 전에 event가 올 수 있는 호출은 frame/byte/time hard cap이 있는 operation별 acquisition window를 사용해야 한다. mapping 확정 뒤 수신 순서로 journal에 반영하고 overflow/timeout/ID 불일치면 drop·추정 귀속·blind retry 대신 `outcome_unknown`, scheduler 중지와 reconciliation Attention으로 fail-safe해야 한다.
 
 인수 기준:
 
 - [ ] 다이아몬드 의존 Plan에서 두 중간 Task는 병렬 실행되고 integration Task는 둘 다 성공한 후 시작한다.
 - [ ] 선행 Task 실패 뒤 후속 Task가 실행되지 않는다.
 - [ ] daemon 재시작 뒤 running/queued Task가 중복 실행되지 않고 reconcile된다.
+- [ ] shared/shared claim은 병렬 실행되고 exclusive claim이 섞이면 직렬화되며, 역순 입력에서도 deadlock 없이 동일 canonical order를 사용한다.
+- [ ] resource/queue lease의 부분 acquire 또는 만료 lease 자동 탈취가 transaction에 남지 않는다.
+- [ ] budget 경계의 마지막 허용 작업까지만 실행되고 초과 Task는 Session/worktree를 만들지 않는다.
+- [ ] pending Checkpoint를 acknowledge하거나 음성으로 “계속”이라 말해도 다음 단계가 실행되지 않는다.
+- [ ] 이전 Dispatch의 늦은 완료·heartbeat·artifact·verification·lease release는 현재 Task를 성공시키거나 자원을 풀지 않는다.
+- [ ] acquisition buffer limit을 넘기거나 mapping 응답이 유실되면 임의 Session/Attempt 귀속 없이 `outcome_unknown`으로 남고 reconcile 전 재실행되지 않는다.
 
 ### ORC-003 — Git worktree 격리
 
@@ -621,12 +691,17 @@ Worktree 통합은 `worktree.integrated`와 Worktree projection으로 추적한�
 5. write scope가 겹치는 독립 Task는 경고하거나 의존 관계를 제안해야 한다.
 6. Git이 아니거나 Git worktree를 사용할 수 없는 Project는 P0에서 read-only만 허용해야 한다. managed-copy 기반 쓰기 격리는 P1로 두고 P0에서 단일 쓰기로 우회하지 않는다.
 7. 사용자의 미커밋 변경, 추적되지 않은 파일, branch는 자동 삭제하거나 덮어쓰지 않아야 한다.
+8. dependency artifact는 frozen 계약의 `reference_only` 또는 `apply_commit` 전략으로만 전달해야 한다. `apply_commit`은 producer의 exact commit OID를 새 dependent worktree에 선언된 순서로 적용해야 한다.
+9. fan-in materialization 중 OID mismatch나 충돌이 발생하면 remaining commit 적용을 멈추고 부분 worktree를 보존한 채 Task와 Plan을 `blocked`, Worktree target Attention을 `integration_required`로 만들어야 한다. 자동 충돌 해결이나 다른 artifact fallback은 금지한다.
+10. turn 종료 후 untracked 파일까지 포함한 actual changed-file manifest와 exact result tree OID를 계산해 frozen write scope와 비교해야 한다. 범위 밖 변경이 하나라도 있으면 Task와 Plan을 `blocked`로 만들고 사용자가 범위를 수정한 새 Plan revision을 validate→freeze→confirm하기 전 같은 Attempt를 진행하지 않아야 한다.
 
 인수 기준:
 
 - [ ] 두 쓰기 Task가 각자의 worktree 밖 파일을 변경할 수 없다.
 - [ ] dirty base opt-in이 없으면 graph 실행이 멈추고 이유를 반환한다.
 - [ ] 취소 또는 실패 뒤 미커밋 변경이 있는 worktree가 보존되고 정리 후보로만 표시된다.
+- [ ] diamond fan-in의 두 commit은 frozen order로만 적용되고 두 번째 commit 충돌 시 첫 번째가 적용된 worktree가 보존되며 Session은 시작되지 않는다.
+- [ ] 선언하지 않은 파일 변경은 검증·통합으로 진행하지 않고 `SCOPE_VIOLATION`과 Task target Attention을 만든다.
 
 ### ORC-004 — 검증, 통합, 정리
 
@@ -636,12 +711,14 @@ Worktree 통합은 `worktree.integrated`와 Worktree projection으로 추적한�
 
 요구사항:
 
-1. Task별 검증 명령과 결과(exit code, duration, redacted output, artifact)를 기록해야 한다.
+1. Task별 검증은 local-admin이 사전 등록한 allowlisted `verificationTemplateId`와 schema 검증된 typed args만 사용하고, 결과(exit code, duration, redacted output, artifact, template version, exact source tree OID)를 기록해야 한다.
 2. 통합 전 changed-file manifest와 base 대비 diff summary를 계산해야 한다.
 3. 충돌이 예상되면 자동 merge 전에 integration Task를 만들거나 사용자에게 순서를 요청해야 한다.
 4. P0는 기본 브랜치 자동 merge/push를 기본 비활성으로 해야 한다.
-5. P0는 사용자가 diff·검증 결과·대상을 확인한 뒤 선택하는 typed `cherry-pick`, `merge`, `patch-export` 통합 mutation을 제공해야 한다. 각 mutation은 대상 `worktreeId`, 검증할 Worktree revision, 대상 ref와 `Idempotency-Key`를 명시하고 generic Git command를 받지 않아야 한다.
+5. P0는 사용자가 diff·검증 결과·대상을 확인한 뒤 선택하는 typed `cherry-pick`, `merge`, `patch-export` 통합 mutation을 제공해야 한다. 각 mutation은 대상 `worktreeId`, Worktree/Project revision, expected TaskAttempt/Dispatch pair, expected source tree/commit OID, target ref와 expected target OID, verification result ID, inspection digest, `Idempotency-Key`를 명시하고 generic Git command를 받지 않아야 한다.
 6. branch/worktree 삭제는 uncommitted 상태, 미통합 commit, 사용자 생성 파일을 검사하고 잠금 해제된 인증 UI의 명시적 확인을 받아야 한다. 음성은 정리 화면으로 이동하거나 취소할 수 있지만 삭제를 확정할 수 없다.
+7. active writer를 정지한 뒤 exact tree OID에서 required verification을 실행해야 한다. daemon은 template의 고정 executable과 literal/typed argv slot을 shell 보간 없이 사용하고, 지정된 managed-worktree/read-only cwd 및 `inherit=false` clean env에 local-admin이 template에 고정한 allowlisted variable/secret reference만 주입해야 한다. caller는 환경 이름·값·secret reference를 선택할 수 없고, 검증 중·후 source tree 또는 current Attempt/Dispatch pair가 달라지면 그 결과를 무효화하고 다시 검사해야 한다.
+8. integration 직전에 source tree/commit과 target ref OID를 다시 읽어 사용자가 확인한 값과 비교해야 한다. 어느 한 값이라도 바뀌면 Git mutation 없이 `SOURCE_CHANGED` 또는 `TARGET_CHANGED`로 거부하고 새 inspection과 확인을 요구해야 한다.
 
 인수 기준:
 
@@ -649,8 +726,91 @@ Worktree 통합은 `worktree.integrated`와 Worktree projection으로 추적한�
 - [ ] default 설정에서 모든 node가 성공해도 main branch가 자동 변경되지 않는다.
 - [ ] typed cherry-pick/merge/patch-export는 사용자가 본 Worktree revision과 대상 ref가 일치할 때만 한 번 실행되고 stale revision 또는 같은 key의 다른 payload는 거부된다.
 - [ ] 미커밋 파일이 있는 worktree 정리 요청은 경고와 확인 없이 실행되지 않는다.
+- [ ] 검증 뒤 source tree를 바꾸면 이전 verification result로 Task 성공이나 integration을 승인할 수 없다.
+- [ ] 사용자가 확인한 뒤 target branch가 이동하면 stale confirmation receipt와 mutation은 Git을 바꾸지 않는다.
+- [ ] Planner/remote payload에 executable path, shell string, 임의 cwd/env를 넣어도 verification process가 시작되지 않는다.
 
-## 4.8 복구, API, 관찰 가능성
+### ORC-005 — 비교 후보 실행과 사람 선택
+
+**우선순위:** P1
+
+**목표:** 같은 작업의 여러 구현 후보를 공정하고 격리된 조건에서 실행·검증하고 사용자가 최종 결과를 선택한다.
+
+요구사항:
+
+1. candidate group은 동일한 frozen Task spec, base Git OID, ContextPackage 입력, completion/verification spec을 사용해야 하며 다른 조건은 명시적 variant field로만 달라질 수 있어야 한다.
+2. 각 candidate는 별도 TaskAttempt/Dispatch, Session, managed worktree, source/result OID와 RunManifest를 가져야 하며 서로의 변경·대화·검증 결과를 실행 중 자동 공유하지 않아야 한다.
+3. candidate 수, 병렬도, attempt·wall-time·token·cost·output·disk는 Plan과 candidate-group budget의 더 좁은 hard cap을 적용해야 한다. 하나의 후보 budget 초과가 다른 후보의 기록을 삭제하지 않아야 한다.
+4. 모든 후보에 동일한 required verifier를 exact candidate tree OID에서 실행하고 changed-file manifest, 검증 결과, risk, budget usage를 같은 비교 schema로 정규화해야 한다.
+5. 시스템은 근거가 있는 비교 요약을 제안할 수 있지만 winner 확정은 durable 사람 Decision Gate와 typed 선택으로만 수행해야 한다. winner 선택만으로 merge/push를 실행하지 않고 ORC-004 통합 확인을 별도로 받아야 한다.
+6. loser worktree·branch·artifact는 선택 직후 자동 삭제하지 않아야 한다. 보존 기간과 inspection digest를 보여 주고 기존 cleanup 확인 경계를 적용해야 한다.
+
+인수 기준:
+
+- [ ] 두 candidate가 같은 base/spec에서 서로 다른 worktree로 실행되고 동일 verifier 결과와 budget usage가 나란히 조회된다.
+- [ ] 시스템 추천만으로 winner나 통합 대상이 확정되지 않는다.
+- [ ] winner 선택, integration, loser cleanup이 서로 다른 revision/idempotency/confirmation 경계를 사용한다.
+
+### ORC-006 — Usage Window Runner(사용량 윈도우 큐 실행)
+
+**우선순위:** P1
+
+**의존성:** OBS-002, ORC-002, ORC-004, CFG-001, ATT-001, APR-001, APR-002, SEC-001, DEV-001, DEV-002
+
+**목표:** 현재 provider 사용량 윈도우와 로컬 실행 이력을 보수적으로 해석해, 사용자가 미리 선택한 큐의 이미 확인된 작업만 제한적으로 병렬 실행한다.
+
+요구사항:
+
+1. optional provider adapter capability는 공식 `account/rateLimits/read` snapshot과 `account/rateLimits/updated` observation에서 bucket별 `usedPercent`, `windowDurationMins`, `resetsAt`, source/freshness를 정규화할 수 있어야 한다. 이는 새 Session/Task 상태 event mapping이 아니며 provider observation 자체로 작업 성공이나 budget 충족을 판정하지 않아야 한다.
+2. `account/usage/read`의 lifetime/daily token activity는 참고 관찰값일 뿐 정확한 남은 token, 이번 window의 잔여량, 특정 Task의 예상 소모량으로 표시하거나 rate-limit bucket을 대신하지 않아야 한다.
+3. local admin은 선택 Queue ID와 그중 stop summary가 향할 단일 control Queue ID, exact frozen hash를 가진 confirmed Plan의 eligible Task ID, bucket별 목표 `usedPercent` 범위, 남겨 둘 reserve floor, snapshot 최대 나이, reset 전 `stopLaunchingAt` buffer, 최대 동시성, 연속 failure threshold, 기존 RunBudget/cost-risk 정책을 참조하는 versioned preset을 저장할 수 있어야 한다. Queue/eligible/각 eligible Task/bucket 목록은 비어 있거나 중복될 수 없고 control Queue는 선택 목록 안에 있어야 한다. 한 preset의 bucket은 하나의 provider adapter에만 속해야 한다. reserve는 `0 ≤ reserve < 100`, 목표는 `0 ≤ min ≤ max ≤ 100 - reserve`, snapshot age/buffer/concurrency/failure threshold는 양의 유한값이어야 한다. snapshot age는 provider adapter capability hard ceiling보다 클 수 없고 preset은 ProjectPolicy·Queue·Plan·Task·RunBudget 제한을 넓힐 수 없다.
+4. run 시작은 (a) daemon 설치에 등록된 active `local_controller` Device의 잠금 해제된 인증 local UI 또는 (b) 명시적 `usage_window.start` capability가 있고 revoke되지 않은 `paired_remote` Device의 잠금 해제·인증 UI에서 누른 단일 action으로만 가능하다. 두 경로 모두 같은 confirmation challenge를 완료해 fresh one-time user-presence receipt를 제출해야 하며, daemon은 actor Device ID/kind와 인증 channel을 요청 body가 아니라 현재 연결에서 결정한다. receipt는 foreground explicit action, actor Device와 channel binding, `Idempotency-Key`, expected preset revision/digest와 Project/Queue/Plan/Task/QueueEntry revisions, sealed eligible-set digest, fresh rate-limit snapshot ID/digest, 현재 candidate·forecast·cost-risk preview digest에 결박해야 한다. local UI·CLI·loopback token도 이 receipt 검증을 우회할 수 없고, paired device는 저장된 preset을 그대로 시작할 수만 있으며 preset/queue/eligible Task/scope를 생성·수정할 수 없다. 음성, notification quick action, Planner는 challenge/receipt를 만들거나 run을 시작할 수 없다.
+5. 각 eligible Task의 forecast는 로컬 과거 TaskAttempt와 provider bucket observation에서 계산한 `min`/`likely`/`max`, confidence, source, provider adapter/bucket identity, sample count, calculated/valid-until 시각과 freshness(`fresh`/`stale`/`unknown`)를 표시해야 한다. 실제 provider 사용량과 Task 비용을 정확히 안다고 주장하지 않고, bounded max나 fresh 상태를 확보하지 못하면 새 Task를 launch하지 않아야 한다.
+6. scheduler는 현재 사용률과 forecast `max`가 목표 상단과 reserve floor를 넘지 않는 Task만 admission해야 한다. 매 admission pass는 Queue priority/order의 결정적 순서로 후보를 검사하고 첫 safe candidate를 고른다. 앞선 entry는 terminal/active/duplicate이거나 그 Task의 bounded fresh forecast가 현재 여유에 맞지 않는다는 구조화된 사유를 기록한 경우에만 그 pass에서 건너뛸 수 있으며 durable Queue 순서를 바꾸지 않는다. sealed membership·revision/definition mismatch, Approval/Checkpoint와 dependency/resource/scope/reconciliation blocker는 뒤 후보로 우회하지 않고 각각 `blocker_pending` 또는 `reconciliation_required`로 중단한다. preset 최대 동시성은 global/Machine/Project/Plan concurrency와 각 RunBudget 중 가장 좁은 제한으로 적용한다.
+7. governed TaskAttempt/Dispatch의 reserve/start/complete/fail/cancel lifecycle과 새 fresh rate-limit observation마다 forecast와 launch 가능 집합을 다시 계산해 durable UsageWindowRun revision/event로 남겨야 한다. 각 lifecycle/observation source event ID로 멱등 처리해 replay가 forecast revision을 중복 증가시키지 않아야 하며 stale TaskAttempt/Dispatch 결과는 계산·admission·stop 판정에 사용할 수 없다. 재계산 뒤 launch slot과 sealed queue가 남았지만 safe candidate가 없고 향후 eligibility를 바꿀 active governed Attempt/Dispatch도 없다면 같은 transaction에서 `no_safe_candidate`로 중단해야 한다. active governed Attempt가 있어 기다리는 경우에도 기존 wall-time/stall cap과 reset buffer가 상한이며 무기한 polling하지 않아야 한다.
+8. 목표 범위 진입은 **새 launch를 멈추는 기준**이며 정확한 100% 소진, 목표 하단 도달, 특정 token 절감량을 보장하지 않는다. 이미 실행 중인 Attempt는 기존 cancel/interrupt/RunBudget 정책을 따르고 사용률만을 이유로 임의 kill하지 않아야 한다.
+9. 선택한 큐와 exact eligible set 밖의 새 작업, 의미 없는 filler, 이미 성공·실행 중인 Task의 duplicate, 목표 사용률을 채우기 위한 합성 prompt를 생성하거나 dispatch하지 않아야 한다.
+10. 모든 launch는 기존 dependency, ResourceClaim/Lease, queue lease, RunBudget, write scope, VerificationTemplate, Checkpoint, Approval과 ORC-004 integration gate를 그대로 통과해야 한다. Runner는 pending blocker에 답하거나 Approval/Checkpoint를 자동 수락하지 않아야 한다.
+11. target band 도달, eligible queue 고갈, safe candidate 부재, redacted account binding 변경, bucket set/window/reset identity 변경, snapshot stale/unknown 또는 preset max age 초과, reset buffer 진입, blocker/Approval/Checkpoint 발생, failure threshold 도달, 사용자 취소, cost/credit risk 또는 기존 hard cap 도달 중 하나면 새 launch를 즉시 중단하고 canonical stop reason(`target_band_reached`, `queue_empty`, `no_safe_candidate`, `account_binding_changed`, `window_changed`, `snapshot_stale_or_unknown`, `reset_buffer_entered`, `blocker_pending`, `failure_threshold`, `user_cancelled`, `cost_or_credit_risk`, `budget_exhausted`, `reconciliation_required`)·최종 snapshot·forecast 오차·launched/completed/active Task를 요약한 `controlQueueId` target `usage_window_run_stopped` Attention을 하나 만들어야 한다.
+12. credit 구매·overage 동의·earned/usage reset 소비, account hot-swap·순환, quota 우회를 자동 수행하거나 Runner 시작 action에 묶지 않아야 한다. 필요한 경우 사용자가 provider의 정상 UI와 별도 인증/결제 흐름을 거친 뒤 새 snapshot과 preview로 새 run을 시작해야 한다.
+13. UsageWindowRun은 preset과 별개인 durable mutable aggregate이며 exact preset revision/digest와 그 revision의 immutable effective policy snapshot, Project policy digest, Project/Queue/Plan/Task start revisions, exact QueueEntry binding, Plan frozen hash·Task definition digest, sealed eligible-set digest, start actor Device ID/kind와 channel binding·one-time presence receipt digest, start snapshot/account/window identity, revision, event, snapshot/replay, start/cancel idempotency, admitted TaskAttempt/Dispatch provenance를 가져야 한다. start binding은 감사용으로 바꾸지 않고, 같은 Run이 만든 정상 lifecycle mutation은 별도 current revision cursor를 같은 transaction에서 갱신해야 한다. 외부 revision 전진은 policy/definition/frozen/membership identity가 그대로이고 상태가 여전히 eligible임을 authoritative source event로 확인한 뒤에만 멱등인 bindings-advanced event와 current cursor를 함께 기록하며, 그 외 변경은 새 launch를 막아야 한다. start transaction에서 곧바로 `running`으로 만들고, 사용자 취소만 `cancelled`, reconciliation 불확실성만 `failed`, 나머지 stop reason은 `stopped`로 수렴시키며 terminal Run을 resume하지 않아야 한다. crash 뒤 provider snapshot, membership과 active pair를 reconcile하기 전에는 새 launch를 하지 않아야 한다.
+
+인수 기준:
+
+- [ ] 빈/중복 Queue·eligible·Task·bucket 목록, 선택 목록 밖 control Queue, 둘 이상의 provider adapter, invalid reserve/target, 비양수 snapshot age/buffer/concurrency/failure threshold preset은 저장되지 않는다.
+- [ ] 같은 start action을 세 번 재시도해도 UsageWindowRun은 하나이고, stale snapshot/revision/preview digest이면 어떤 Dispatch도 생기지 않는다.
+- [ ] fresh bucket update와 각 governed Attempt/Dispatch lifecycle 뒤 `min`/`likely`/`max` forecast가 source event당 한 번 다시 계산되고, 보수적 max가 target 상단 또는 reserve floor를 넘으면 새 launch가 없다.
+- [ ] target band 전에 eligible queue가 비면 filler나 duplicate를 만들지 않고 `stopReason="queue_empty"`인 `usage_window_run_stopped` Attention을 남긴다.
+- [ ] Queue priority/order대로 scan할 때 더 작은 safe candidate가 있으면 앞 entry의 skip reason을 기록하고 그 후보를 admission하되 Queue 자체는 재정렬하지 않는다. queue가 남고 launch slot이 있지만 safe candidate와 기다릴 active governed Attempt가 모두 없으면 polling하지 않고 `stopReason="no_safe_candidate"`로 정확히 한 번 중단한다.
+- [ ] snapshot이 stale/unknown/max age 초과가 되거나 redacted account binding, bucket set, `resetsAt`/window duration이 달라지면 active Attempt를 성공으로 추정하지 않고 새 launch만 멈춘 채 reconcile 가능한 기록을 보존한다.
+- [ ] 첫 admission이 Plan/Task/QueueEntry revision을 정상 변경해도 current cursor가 같은 transaction에서 전진해 둘째 admission은 start revision이 아니라 새 cursor를 CAS한다. frozen hash, Task definition, QueueEntry membership 또는 Project/Queue admission policy가 바뀌면 새 launch가 없다.
+- [ ] pending Approval/Checkpoint, cost/credit risk, failure threshold, 사용자 cancel 각각이 독립 stop reason으로 재현되고 자동 accept·credit/reset 소비·account switch가 없다.
+- [ ] 알림 action이나 음성으로 “남은 사용량 다 써”라고 말해도 Runner가 시작되지 않고 잠금 해제된 preview 화면만 안내한다. active `local_controller`와 revoke되지 않고 `usage_window.start` capability를 가진 `paired_remote` Device는 모두 동일한 fresh one-time receipt·actor/channel binding·exact preview 검증을 통과해야 run 하나를 시작하며, loopback API나 CLI도 이를 우회하지 못하고 어떤 preset/queue/task/scope도 바꾸지 않는다.
+
+## 4.8 코드 리뷰 피드백
+
+### REV-001 — line-anchored batched review feedback
+
+**우선순위:** P1
+
+**목표:** 사용자가 여러 코드 리뷰 의견을 정확한 diff 위치에 묶어 남기고 에이전트에게 한 번의 후속 Turn으로 전달한다.
+
+요구사항:
+
+1. 각 feedback item은 canonical relative path, `baseOid`, `headOid`, diff side(`base`/`head`), 1-based line, 해당 line 또는 hunk의 content hash, 사용자 text를 가져야 한다.
+2. batch는 대상 Session/TaskAttempt, expected Session/Task revision, item 순서, 전체 payload digest와 `Idempotency-Key`에 결박해야 한다.
+3. 제출 시 현재 blob/diff를 다시 확인하고 path·OID·side·line·content hash 중 하나라도 맞지 않으면 해당 item을 `stale_anchor`로 표시해야 한다. 가장 비슷한 줄로 자동 재배치하거나 다른 파일에 적용하지 않아야 한다.
+4. 유효 item 전체는 기존 turn에 steer하지 않고 대상 Session이 새 Turn을 받을 수 있을 때 하나의 structured follow-up prompt로 정확히 한 번 전달해야 한다. 일부 stale이면 사용자가 stale item을 제거·재anchor한 새 batch를 확인하기 전 전송하지 않는다.
+5. review batch는 Approval이나 파일 patch가 아니다. 제출 자체가 권한 승인, scope 확대, 변경 적용, verification 통과를 뜻하지 않으며 이후 실행은 기존 sandbox·Approval·write scope를 따라야 한다.
+6. comment text는 prompt/코드와 같은 민감도로 저장·전송하고 notification, telemetry, 일반 로그에 넣지 않아야 한다.
+
+인수 기준:
+
+- [ ] 같은 batch를 네트워크 재시도로 세 번 제출해도 새 Turn은 하나만 생성된다.
+- [ ] head OID나 anchored line content가 바뀌면 `stale_anchor`가 반환되고 다른 줄에 추정 적용되지 않는다.
+- [ ] feedback 제출만으로 Approval이 accepted되거나 Worktree가 통합되지 않는다.
+
+## 4.9 복구, API, 관찰 가능성
 
 ### REL-001 — durable journal과 재연결
 
@@ -667,12 +827,18 @@ Worktree 통합은 `worktree.integrated`와 Worktree projection으로 추적한�
 5. notification은 transactional outbox에서 발송하고 provider retry가 상태 이벤트를 재생하지 않아야 한다.
 6. App Server 재연결 시 저장된 상태와 thread/read/list 결과, adapter 내부 pending server request 및 공개 Approval projection을 reconcile해야 한다.
 7. wall clock은 표시와 TTL에, sequence는 ordering/cursor에, aggregate revision은 optimistic concurrency에 사용해야 한다.
+8. snapshot과 replay는 Dispatch, ResourceClaim/Lease, RunBudget, Checkpoint, ContextPackage, RunManifest와 Session이 없는 orchestration Attention을 포함해야 한다. mutable aggregate는 각 revision으로, immutable context/manifest는 revision 1 create record로 복구해야 한다.
+9. daemon 재시작 뒤 ResourceLease를 자동 탈취하거나 budget debit을 중복 반영하지 않고 실제 managed Attempt/Dispatch/process/worktree와 reconcile한 뒤에만 dispatch를 재개해야 한다.
+10. upstream ID acquisition window의 buffer는 bounded여야 한다. 매핑 확정 전 frame을 publish하지 않고, overflow/timeout은 `outcome_unknown` operation/Dispatch와 reconciliation Attention으로 journal에 남겨야 한다.
+11. P1 Usage Window capability가 활성화되면 UsageWindowPreset/Run도 revision과 event로 snapshot/replay에 포함하고, crash 뒤 fresh provider snapshot과 current Attempt/Dispatch를 reconcile하기 전 새 launch를 금지해야 한다.
 
 인수 기준:
 
 - [ ] event를 중복·역순·재생해도 최종 snapshot이 fixture의 기대값과 일치한다.
 - [ ] journal commit 직후 프로세스를 kill해도 Attention Item은 유실되지 않는다.
 - [ ] push 전송 도중 kill 후 재시작해도 dedup key 기준 최대 한 번만 사용자에게 표시된다.
+- [ ] resource acquire/budget debit/checkpoint response 직후 kill fixture에서 부분 lease, 중복 usage, gate 우회 없이 동일 snapshot으로 수렴한다.
+- [ ] journal commit 전 worker/runtime 시작 또는 event publish가 없고 acquisition buffer overflow/timeout 뒤 blind retry가 없다.
 
 ### SEC-001 — 인증, 암호화, 권한 경계
 
@@ -692,6 +858,12 @@ Worktree 통합은 `worktree.integrated`와 Worktree projection으로 추적한�
 8. prompt, tool output, command environment, 파일 경로에서 secret을 완벽히 탐지할 수 있다고 가정하지 말고 기본 알림·로그 payload 자체를 최소화해야 한다.
 9. 클라이언트가 요청할 수 있는 mutation은 명시적 allowlist여야 하며, daemon 내부 App Server channel이나 OS process control을 일반 relay message로 노출하지 않아야 한다.
 10. 보안상 안전한 실패가 불가능한 schema mismatch, journal 무결성 실패, 키 저장소 실패 시 mutation을 차단해야 한다.
+11. Project 파일, AGENTS 지침, upstream artifact와 agent handoff는 신뢰되지 않은 content로 취급하고 ProjectPolicy, execution profile, RunBudget, ResourceClaim, Approval 또는 Checkpoint 결정을 수정하는 권한으로 해석하지 않아야 한다.
+12. read-only/write mode와 별도로 tool/MCP/network 같은 외부 side effect capability를 execution profile에서 allowlist해야 하며, downstream artifact나 review comment가 이를 넓힐 수 없어야 한다.
+13. task/attempt/depth/output/disk/resident/wall-time hard cap과 resource lease를 적용해 재귀 분해, retry, stdout flood, worktree 증식으로 인한 자원 고갈을 차단해야 한다.
+14. process interrupt/termination은 daemon registry의 owner와 PID start identity에 결박해야 한다. 공유 runtime 또는 소유 불명 process는 자동 종료하지 않아야 한다.
+15. TaskAttempt마다 새 Dispatch ID를 발급하고 runtime result·heartbeat·Artifact·VerificationResult·lease release를 current pair에 fence해야 한다. stale pair는 성공, 산출물 채택, resource 해제, integration을 일으키지 않아야 한다.
+16. P1 UsageWindowRun start는 local·remote 모두 active Device, 인증 channel과 같은 actor, foreground explicit action에 결박된 fresh one-time user-presence receipt를 검증해야 한다. local start는 install-bound `local_controller`와 local-admin channel만, remote start는 revoke되지 않은 `paired_remote` Device의 명시적 `usage_window.start` capability만 허용한다. 이 capability는 preset/queue/task/scope 수정, Approval/Checkpoint accept, credit/reset/결제나 account switch 권한을 포함하지 않아야 하며 loopback API·CLI·voice·notification action은 receipt를 우회 발급할 수 없어야 한다.
 
 보안 경계:
 
@@ -706,6 +878,11 @@ Worktree 통합은 `worktree.integrated`와 Worktree projection으로 추적한�
 - [ ] relay 저장소 dump에 넣은 알려진 prompt·code·approval fixture 문자열이 평문으로 존재하지 않는다.
 - [ ] 기기 scope나 upstream 요청보다 넓은 승인 결정이 daemon validation을 통과하지 않는다.
 - [ ] 키 저장소 접근 실패 상태에서 remote mode가 fail-open으로 시작하지 않는다.
+- [ ] 악성 project instruction/artifact가 execution profile, resource claim, budget 또는 approval scope를 넓히지 못한다.
+- [ ] task explosion, output flood, disk cap, PID reuse fixture가 hard cap 또는 managed-owner 검사를 우회하지 못한다.
+- [ ] stale TaskAttempt/Dispatch fixture가 Task 성공, Artifact 채택, lease release 또는 integration을 일으키지 않는다.
+- [ ] `usage_window.start`만 가진 device가 preset/eligible set을 바꾸거나 stale/replayed receipt로 run을 시작하지 못한다.
+- [ ] local loopback token이나 CLI가 `local_controller` actor/channel binding과 foreground user-presence receipt 없이 UsageWindowRun을 시작하지 못한다.
 
 ### API-001 — 로컬·원격 API와 event stream
 
@@ -716,8 +893,8 @@ Worktree 통합은 `worktree.integrated`와 Worktree projection으로 추적한�
 요구사항:
 
 1. API는 `/api/v1`처럼 명시적 major version을 가져야 한다.
-2. read API는 machines, projects, sessions, approvals, attentions, plans/tasks, capabilities, diagnostics를 제공해야 한다.
-3. mutation API는 project/session/turn/typed approval/plan/task/worktree 동작별 endpoint 또는 command type을 가져야 한다.
+2. read API는 machines, projects, sessions, approvals, attentions, plans/tasks/dispatches, worktrees, resource claims/leases, run budgets, checkpoints, referenced context/run manifest, capabilities, diagnostics를 제공해야 한다.
+3. mutation API는 project/session/turn/typed approval/plan/task/worktree/checkpoint 동작별 endpoint 또는 command type을 가져야 한다. ResourceLease와 RunBudget debit은 daemon 내부 transition만 허용해야 한다.
 4. event stream은 snapshot과 sequence resume을 지원해야 한다.
 5. 모든 mutation은 인증, 권한 scope, `Idempotency-Key`를 검사하고, 기존 mutable aggregate를 대상으로 하면 그 종류의 `expected...Revision`을 검증해야 한다. sequence를 concurrency token으로 받지 않는다.
 6. 오류는 stable code, user-safe message, retryable 여부, correlation ID를 포함해야 한다.
@@ -749,12 +926,35 @@ Worktree 통합은 `worktree.integrated`와 Worktree projection으로 추적한�
 4. support bundle은 사용자가 preview·redact한 뒤 export할 수 있어야 한다.
 5. 제품 telemetry는 기본 비활성 또는 명시적 opt-in이어야 하며 prompt, 코드, 파일 경로, 음성을 수집하지 않아야 한다.
 6. 로그 retention과 삭제를 설정할 수 있어야 한다.
+7. TaskAttempt 진단에는 redacted RunManifest ID/digest, execution profile, exact base/source/result tree OID, context/artifact provenance, budget/resource/checkpoint 상태를 연결하되 원문 prompt·secret·절대 경로를 기본 로그에 넣지 않아야 한다.
 
 인수 기준:
 
 - [ ] 승인 문제를 Approval/turn/correlation ID로 추적할 수 있고 upstream request ID는 adapter 진단 범위 밖으로 노출되지 않는다.
 - [ ] fixture secret을 prompt, command env, path에 넣은 뒤 support bundle scanner가 평문 노출을 차단한다.
 - [ ] telemetry off 상태에서 제품 분석 endpoint로 outbound 요청이 발생하지 않는다.
+- [ ] 한 Task 결과를 RunManifest→ContextPackage→Artifact/Verification→source tree OID까지 추적할 수 있고 secret fixture 원문은 노출되지 않는다.
+
+### OBS-002 — provider usage·rate-limit 가시성
+
+**우선순위:** P1
+
+**목표:** 사용량과 속도 제한 정보를 출처·신선도와 함께 보여 주고 scheduler가 정직한 queue 판단에 사용할 수 있게 한다.
+
+요구사항:
+
+1. usage snapshot은 provider/runtime가 제공한 source, account의 redacted identity, 수집 시각, 유효/만료 시각, 측정 window, 사용·남은 값, 단위, reset 시각, 신뢰 상태(`fresh`, `stale`, `unknown`)를 가져야 한다.
+2. 누락·지원하지 않음·오류를 0 사용 또는 무제한으로 표시하지 않고 `unknown`과 원인을 명시해야 한다. runtime 추정값과 provider authoritative 값을 같은 정밀도로 가장하지 않는다.
+3. queue policy는 fresh authoritative rate-limit/usage와 stable retry hint를 pause/resumeAfter/admission 입력으로 사용할 수 있다. stale/unknown 값만으로 위험 작업을 자동 시작하거나 hard token/cost cap 충족을 주장하지 않아야 한다.
+4. 계정 인증 정보, 전체 billing 식별자, bearer token을 event/log/remote projection에 노출하지 않아야 한다.
+5. Pawdex는 사용량 제한을 피하려고 계정을 자동 hot-swap하거나 여러 계정을 순환하거나 provider quota를 우회하지 않아야 한다. 계정 변경은 사용자가 Codex/provider의 정상 인증 경로에서 명시적으로 수행하고 runtime reconciliation을 거쳐야 한다.
+6. usage poll은 provider rate limit을 악화시키지 않게 backoff·jitter·최소 갱신 간격을 적용하고 로컬 실행 자체와 실패 격리를 유지해야 한다.
+
+인수 기준:
+
+- [ ] unavailable fixture가 0% 사용이나 무제한으로 렌더링되지 않고 source/freshness/원인을 보존한다.
+- [ ] fresh reset hint는 영향 scope Queue만 pause하며 다른 Project의 독립 queue 상태를 오염시키지 않는다.
+- [ ] account 전환이나 quota 우회를 수행하는 mutation·자동 fallback이 공개 API에 없다.
 
 ### CFG-001 — 정책과 설정 우선순위
 
@@ -766,7 +966,7 @@ Worktree 통합은 `worktree.integrated`와 Worktree projection으로 추적한�
 
 1. 정책 출처는 `machine default → ProjectPolicy → confirmed Plan/Task constraint → 허용된 Session execution 선택` 순으로 결합해야 한다. 하위 단계는 보안·권한 범위를 임의로 넓힐 수 없고 더 좁은 제한이 우선한다.
 2. 최종 effective policy와 각 값의 출처·제약 이유를 조회할 수 있어야 한다.
-3. 알림, quiet hours, concurrency, worktree, approval, voice, retention을 독립 설정 영역으로 둔다.
+3. 알림, quiet hours, concurrency, RunBudget ceiling, stall/acquisition-window threshold, worktree, resource, execution profile, approval, voice, retention을 독립 설정 영역으로 둔다. P1 UsageWindowPreset은 local-admin 전용 별도 영역으로 두고 기존 budget/cost/queue 정책을 참조만 해야 한다.
 4. 보안을 약화하는 ProjectPolicy 변경은 기본값이 아니어야 하며 영향과 scope를 보여 주고 `expectedProjectRevision`, `Idempotency-Key`, 필요한 explicit confirmation을 검증해야 한다.
 5. 알 수 없는 설정 키는 silent ignore하지 않고 versioned validation 오류 또는 경고를 내야 한다.
 6. secret은 일반 설정 파일과 분리해 OS secure storage 또는 동등한 비밀 저장소를 사용해야 한다.
@@ -804,7 +1004,7 @@ Worktree 통합은 `worktree.integrated`와 Worktree projection으로 추적한�
 | --- | --- | --- |
 | NFR-PERF-001 | 이벤트 지연 | 정상 로컬 부하에서 App Server event부터 canonical state 반영까지 p95 1초 이내 |
 | NFR-PERF-002 | 알림 enqueue | Attention journal commit부터 remote provider enqueue까지 p95 2초 이내 |
-| NFR-SCALE-001 | 규모 | 기준 Machine에서 20개 등록 Session, 8개 active turn, 5,000개 보존 event를 기능 저하 없이 처리; 실제 한도는 부하 테스트 후 조정 |
+| NFR-SCALE-001 | 규모 | 기준 Machine에서 20개 등록 Session, 8개 active turn, 5,000개 보존 event를 기능 저하 없이 처리하고 Plan별 task/depth/attempt/wall-time/resident/output/worktree hard cap을 항상 적용; 실제 한도는 부하 테스트 후 조정 |
 | NFR-REL-001 | 전달 | provider 외부 제약을 제외한 journal-to-outbox Attention 손실 0건 |
 | NFR-REL-002 | 복구 | daemon 비정상 종료 후 30초 내 API 준비 및 상태 reconcile 시작 |
 | NFR-SEC-001 | 네트워크 | P0 loopback-only listener, outbound E2EE relay, TLS, replay protection, 기기 revoke |
@@ -814,6 +1014,10 @@ Worktree 통합은 `worktree.integrated`와 Worktree projection으로 추적한�
 | NFR-PORT-001 | 플랫폼 | P0 daemon은 macOS를 기준 지원하고 Linux는 검증 범위를 명시; 모바일은 capability 기반 웹 설치형 클라이언트 |
 | NFR-I18N-001 | 언어 | 내부 event code는 언어 중립, 사용자 메시지는 최소 한국어·영어 확장 가능한 message key 사용 |
 | NFR-OPS-001 | 업그레이드 | DB/schema migration은 backup, dry-run 또는 rollback 가능한 단계를 제공 |
+| NFR-UX-001 | 점진적 공개·용어 | 개발자와 비개발자가 같은 흐름을 쓰되 기본 화면은 목표·현재 상태·다음 안전 행동을 쉬운 말로 보여 주고, event ID·revision·digest·raw diagnostics는 명시적으로 펼치는 기술 상세에 둔다 |
+| NFR-UX-002 | 정직한 진행 표현 | lifecycle stage와 검증 가능한 근거만 진행으로 표시하고 근거 없는 완료 퍼센트, 정확한 token 잔량·100% 소진 또는 성공 예측을 표시하지 않는다 |
+| NFR-A11Y-001 | 조작성·상태 인지 | 핵심 interactive target은 최소 44×44 CSS px이며 keyboard/focus/screen-reader label을 제공하고 모든 상태·위험·성공 표시는 색상만이 아니라 icon과 text를 함께 사용한다 |
+| NFR-VOICE-001 | 음성 확인 | 모든 음성 mutation은 전사문, 해석한 action, 정확한 대상 Project/Session/Approval을 전송 전에 보여 주거나 읽어 주고 명시적 확인을 받으며 ambiguous/low-confidence이면 실행하지 않는다 |
 
 ## 6. 공통 오류 처리 표
 
@@ -827,6 +1031,12 @@ Worktree 통합은 `worktree.integrated`와 Worktree projection으로 추적한�
 | push provider 실패 | outbox retry 또는 fallback | 채널 상태 | TTL·상한 내 예 |
 | 음성 전사 실패 | 오디오 폐기, 텍스트 입력 제안 | 로컬/네트워크/권한 원인 | 사용자가 다시 시작 |
 | worktree 충돌 | 해당 Task/integration 차단 | 충돌 파일과 안전한 선택 | 아니오 |
+| dependency materialization 충돌/OID mismatch | 부분 worktree 보존, Task·Plan block, Worktree Attention 생성 | producer, 적용 순서, 충돌 파일/OID | 아니오 |
+| resource lease 대기 상한 | Task는 미실행 유지, Task Attention 생성 | canonical resource 표시명, owner, 대기 시간 | 사용자 재시도/정책 변경 |
+| RunBudget hard cap | 새 dispatch 차단, active turn typed interrupt, Plan block | 소진 차원, 측정 지원 여부, 최종 usage | 아니오; 새 Plan revision 필요 |
+| Task stall | health만 `stalled`, 상태 결과 추정 금지 | 마지막 검증 activity, 안전한 interrupt 선택 | 자동 강제 종료 금지 |
+| write scope 위반 | Task·Plan block, worktree 보존 | 선언 범위와 실제 변경 manifest | 아니오; 재동결·재확인 |
+| source/target OID 변경 | verification/integration 거부 | 기대값과 최신 OID, 재검사 필요 | 아니오 |
 | disk full/journal 실패 | 새 mutation 중단, read-only 진단 | 데이터 보호를 위한 중단 | 아니오 |
 | unsupported schema | App Server mutation 차단 | 지원 범위와 업데이트 안내 | 아니오 |
 | relay 불가 | local mode 유지 | 원격만 불가함 | backoff, local 기능은 계속 |
@@ -845,6 +1055,11 @@ Worktree 통합은 `worktree.integrated`와 Worktree projection으로 추적한�
 - [ ] notification/로그/support bundle secret redaction
 - [ ] raw audio 기본 미저장, 클라우드 전사 opt-in
 - [ ] raw shell 및 generic JSON-RPC pass-through endpoint 부재 테스트
+- [ ] finite RunBudget, task/depth/attempt/output/disk 폭주 방지와 멱등 usage accounting
+- [ ] ResourceClaim 전역 정렬, shared/exclusive 호환성, all-or-nothing lease, TTL/recovery
+- [ ] project instruction/artifact가 execution profile·scope·approval을 넓히지 못함
+- [ ] process owner/PID start identity 확인과 공유·소유 불명 process 강제 종료 금지
+- [ ] actual write scope와 verification/source/target OID freshness gate
 - [ ] dependency/SBOM, secret scan, release artifact 검증
 
 ## 8. 대표 E2E 인수 시나리오
@@ -869,13 +1084,19 @@ Given Project workspace root 밖 쓰기 또는 session-scoped 권한 요청이 �
 
 Given `needs_input` Item이 journal에 기록되고 push provider 호출 직후 daemon이 종료되었을 때, When daemon을 재시작하면, Then Item은 복구되고 같은 dedup stage가 사용자에게 두 번 표시되지 않는다.
 
+같은 시나리오에서 ResourceLease acquire, budget debit 또는 Checkpoint 응답 직후 종료되더라도 부분 lease·중복 usage·gate 우회 없이 snapshot과 event replay가 같은 상태로 수렴해야 한다.
+
 ### E2E-006 — DAG 의존성과 실패
 
 Given Task A와 B가 병렬이고 C가 두 Task에 의존할 때, When A는 성공하고 B의 검증이 실패하면, Then C는 `blocked`이며 사용자가 B 재시도 또는 Plan 변경을 선택하기 전 실행되지 않는다.
 
+A와 B가 모두 commit artifact를 만들고 C가 두 결과를 `apply_commit`으로 소비할 때는 frozen order와 exact OID로 materialize한다. 두 번째 commit이 충돌하면 C Session을 시작하지 않고 부분 worktree를 보존하며 Worktree target `integration_required` Attention을 생성한다. 동일 Plan이 budget cap에 도달하면 아직 dispatch되지 않은 Task는 Session/worktree를 만들지 않는다.
+
 ### E2E-007 — worktree 데이터 보호
 
 Given 실패한 Task worktree에 미커밋 파일이 있을 때, When Plan 정리를 요청하면, Then 삭제 대상과 복구 불가능성을 보여 주고 잠금 해제된 인증 UI의 명시적 승인 전에는 파일을 제거하지 않는다.
+
+실제 변경 파일이 frozen write scope 밖이거나 검증 뒤 source tree/통합 target OID가 바뀌면 Task/Plan 또는 integration을 차단하고, 새 Plan freeze/confirm 또는 새 inspection 전 기존 결과·receipt를 재사용하지 않는다.
 
 ### E2E-008 — relay 침해 가정
 
@@ -899,6 +1120,14 @@ Given 모바일 브라우저가 background custom sound를 지원하지 않을 �
 | JTBD-04 원격 승인 처리 | APR-001, APR-002, SEC-001 | E2E-002, E2E-004 | P0 |
 | JTBD-05 연결 후 상태 신뢰 | SES-003, REL-001, API-001 | E2E-003, E2E-005, E2E-009 | P0 |
 | JTBD-06 하네스 확장 | SYS-002, API-001, OSS-001 | contract/fuzz/build CI | P0 |
+| P1 유휴 Session 자원 회수 | SES-004 | SES-004 hibernation/warm-resume 인수 기준 | P1 |
+| P1 동일 spec 후보 비교 | ORC-005 | ORC-005 candidate isolation/winner/cleanup 인수 기준 | P1 |
+| P1 사용량 윈도우 큐 실행 | ORC-006, OBS-002, CFG-001 | ORC-006 fresh snapshot/forecast/stop/no-filler 인수 기준 | P1 |
+| P1 정확한 코드 리뷰 전달 | REV-001 | REV-001 anchor/idempotency 인수 기준 | P1 |
+| P1 provider 한도 가시성 | OBS-002 | OBS-002 source/freshness/no-hot-swap 인수 기준 | P1 |
+| 개발자·비개발자 공통 조작 | NFR-UX-001, NFR-A11Y-001 | 핵심 흐름 plain-language walkthrough, 기술 상세 progressive-disclosure, keyboard/screen-reader/44px/non-color audit | P0 |
+| 상태·사용량 오해 방지 | NFR-UX-002, SES-003, OBS-002, ORC-006 | lifecycle evidence와 forecast 표기 audit, 근거 없는 완료율·token 잔량·100% 소진 문구 0건 | P0/P1 |
+| 음성 오발송 방지 | NFR-VOICE-001, VOI-002 | E2E-003과 대상·의도·전사 확인, ambiguous/low-confidence 차단 테스트 | P0 |
 
 ## 10. 출시 판정
 
@@ -910,20 +1139,24 @@ P0는 다음 조건을 모두 충족해야 공개 MVP로 표시할 수 있다.
 4. 지원 Codex 버전과 플랫폼 범위를 문서화하고 contract test가 통과한다.
 5. daemon crash, App Server restart, relay disconnect, push retry chaos test가 상태 수렴을 보인다.
 6. 모바일 custom sound 제한, cloud STT 여부, relay metadata를 사용자 문서에서 과장 없이 설명한다.
-7. UI 디자인은 별도 승인을 받지 않았더라도 기능 테스트용 최소 클라이언트로 검증할 수 있다. 이 최소 클라이언트는 최종 제품 디자인으로 간주하지 않는다.
+7. 사용자 화면은 승인된 Figma 제품 UX의 핵심 흐름·정보 우선순위·안전 확인을 구현하고, `NFR-UX-*`, `NFR-A11Y-001`, `NFR-VOICE-001` 검증을 통과한다. 시각 브랜드 변경은 이 기능·안전 계약을 약화시키지 않아야 한다.
 8. 설치, 제거, 데이터 export, 기기 revoke, worktree 수동 복구 절차가 문서화된다.
+9. Session이 없는 Plan/Task/Queue/Worktree Attention, dependency materialization, ResourceLease, RunBudget, Checkpoint가 crash/replay 뒤 수렴한다.
+10. scope 위반, stale source/target OID, budget exhaustion, 소유 불명 process termination이 fail-closed 테스트를 통과한다.
 
-## 11. 후속 설계 입력
+## 11. 제품 UX 구현 기준
 
-디자인 단계에는 이 문서의 기능 ID와 상태를 입력으로 전달한다. 디자인은 다음 계약을 변경하지 않고 표현 방법을 결정한다.
+[Figma 제품 UX 초안](https://www.figma.com/design/24X7ul4Vb9aTKZXpSY0OL3/pinpop?node-id=2290-2)은 이 문서의 기능 ID와 상태를 화면으로 연결한다. 구현과 후속 디자인 변경은 다음 계약을 변경하지 않고 표현 방법만 발전시킨다.
 
 - Session, Plan, Task의 차이와 TaskState lifecycle
-- `needs_input`, `completed`, `failed`의 우선순위
-- Attention의 acknowledged/resolved 상태와 연결된 Approval의 risk/expiry
+- `needs_input`, `completed`, `failed`와 orchestration blocker의 우선순위
+- Attention의 typed target/source, acknowledged/resolved 상태와 연결된 Approval·Checkpoint의 risk/expiry
 - typed approval에서 반드시 보여야 할 정보와 명시적 확인
 - 음성 대상·전사문·실행 의미 확인
 - 알림 capability와 fallback의 정직한 표시
 - worktree 결과와 통합 전 검증 상태
+- RunBudget·resource 대기·stall 상태와 source/target OID freshness
+- P1 UsageWindowRun의 source/freshness, min/likely/max confidence, target/reserve와 stop reason
 
 기능 계약을 바꿔야 하는 디자인 제안은 해당 기능 ID의 명세 변경과 테스트 갱신을 함께 거친다.
 

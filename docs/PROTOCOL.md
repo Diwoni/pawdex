@@ -2,7 +2,7 @@
 
 > 상태: **제안안(Proposal), 구현 전 변경 가능**
 > 프로토콜 버전: `1`
-> 최종 수정: 2026-09-07
+> 최종 수정: 2026-09-12
 
 ## 1. 범위와 규범
 
@@ -72,6 +72,13 @@ daemon은 loopback에만 기본 바인딩한다. 브라우저 WebSocket에는 �
 | 410 | `CURSOR_EXPIRED` | event 보존 범위 밖 cursor |
 | 422 | `AMBIGUOUS_TARGET` | 음성/별칭 대상이 둘 이상 |
 | 422 | `EXECUTION_MODE_UNAVAILABLE` | Project/capability에서 실행 조합을 허용하지 않음 |
+| 422 | `BUDGET_UNENFORCEABLE` | 요청한 token/cost cap을 runtime이 신뢰성 있게 계측할 수 없음 |
+| 409 | `BUDGET_EXHAUSTED` | 확인된 RunBudget hard cap에 도달해 실행을 계속할 수 없음 |
+| 409 | `RESOURCE_CONFLICT` | 필요한 shared/exclusive resource lease를 안전하게 획득할 수 없음 |
+| 409 | `CHECKPOINT_PENDING` | durable 사람 확인 gate가 아직 해결되지 않음 |
+| 409 | `SCOPE_VIOLATION` | 실제 변경 경로가 frozen Plan의 write scope를 벗어남 |
+| 409 | `SOURCE_CHANGED` | 검증·통합 대상 source tree/commit OID가 사용자가 본 값과 다름 |
+| 409 | `TARGET_CHANGED` | 통합 대상 ref의 현재 OID가 사용자가 본 값과 다름 |
 | 429 | `CONCURRENCY_LIMITED` | 동시성 정책 초과 |
 | 502 | `RUNTIME_UNAVAILABLE` | Codex app-server 사용 불가 |
 | 503 | `RECONCILIATION_REQUIRED` | runtime 상태 확정 필요 |
@@ -130,11 +137,42 @@ interface ProjectPolicy {
     allowedNetworkTargets: Array<{ host: string; protocol: string; ports?: number[] }>;
     allowedExternalReadPathIds: string[];
   };
+  executionProfiles: Array<{
+    id: string;
+    role: "planner" | "worker" | "verifier" | "integrator";
+    model: string;
+    allowedToolIds: string[];
+    allowedMcpServerIds: string[];
+    allowedNetworkTargetIds: string[];
+    maxTurnWallTimeMs: number;
+  }>;
+  runBudgetCeiling: RunBudgetLimits;
+  stallPolicy: {
+    suspectedAfterMs: number;
+    attentionAfterMs: number;
+    interruptGraceMs: number;
+  };
+  acquisitionWindow: {
+    maxFrames: number;
+    maxBytes: number;
+    maxWaitMs: number;
+  };
   verificationTemplates: Array<{
     id: string;
+    version: number;
+    digest: string;
     executableId: string;
+    argvTemplate: Array<
+      | { type: "literal"; value: string }
+      | { type: "argument"; name: string }
+    >;
     allowedArgsSchema: Record<string, unknown>;
     cwd: "managed_worktree" | "project_read_only";
+    environment: {
+      inherit: false;
+      allowedVariableIds: string[];
+      allowedSecretRefIds: string[];
+    };
     maxTimeoutMs: number;
   }>;
   remoteControl: "disabled" | "e2ee_relay";
@@ -163,6 +201,18 @@ interface ArtifactSpec {
   kind: "file" | "commit" | "report" | "test_result";
   required: boolean;
 }
+
+interface RunBudgetLimits {
+  maxTasks: number;
+  maxDepth: number;
+  maxAttemptsPerTask: number;
+  maxWallTimeMs: number;
+  maxResidentRuntimes: number;
+  maxOutputBytes: number;
+  maxWorktreeBytes: number;
+  maxTokens: number | null;
+  maxCostMicros: number | null;
+}
 ```
 
 원격 클라이언트에는 전체 절대 경로 대신 redacted display path를 반환할 수 있다.
@@ -180,7 +230,11 @@ P0의 `ProjectPolicy → app-server` 매핑은 고정한다.
 
 원격 API에는 `danger-full-access`, 임의 approval policy, arbitrary sandbox, 임의 cwd를 노출하지 않는다. 로컬 UI에서 별도 고급 정책을 추가하더라도 P0 원격 계약과 섞지 않는다. daemon은 LAN/public interface에 직접 listen하지 않고 outbound E2EE relay만 사용한다.
 
-Session 생성 시 daemon은 요청 model이 `allowedModels`에 있는지, Git/worktree capability와 execution 조합, `sandboxByMode`, `approvalsReviewer="user"`를 함께 검증한다. 정책 booleans는 upstream이 제안한 결정을 더 좁힐 수만 있고 임의 payload로 확대할 수 없다.
+Session 생성 시 daemon은 요청 model이 `allowedModels`에 있는지, Git/worktree capability와 execution 조합, `sandboxByMode`, `approvalsReviewer="user"`를 함께 검증한다. Plan Task는 frozen document가 가리키는 `executionProfileId`를 사용하며 profile의 model/tool/MCP/network 범위는 ProjectPolicy의 부분집합이어야 한다. 정책 booleans와 profile은 upstream이 제안한 결정을 더 좁힐 수만 있고 임의 payload로 확대할 수 없다.
+
+`RunBudgetLimits`의 앞 7개 값은 P0에서 모두 양의 유한 hard cap이다. token/cost는 runtime이 단조 증가하고 attempt/Plan에 귀속 가능한 usage capability를 보고할 때만 유한값을 허용하고 강제한다. 신뢰 가능한 계측이 없으면 둘은 `null`이어야 하며 confirm 응답은 해당 차원을 **계측·보장하지 못함**으로 표시한다. 지원하지 않는 runtime에 숫자 cap을 요청하면 `BUDGET_UNENFORCEABLE`로 validation을 실패시키며 무제한으로 가장하지 않는다.
+
+VerificationTemplate은 잠금 해제된 로컬 관리자 UI에서 ProjectPolicy mutation으로만 생성·수정·삭제한다. 변경은 `expectedProjectRevision`, `Idempotency-Key`, template digest에 묶인 confirmation receipt를 요구하며 이미 frozen Plan에는 소급 적용하지 않는다. registry는 shell/command interpreter executable, `-c`/eval류 command-text slot, raw argv fragment schema를 허용하지 않는다. Planner, Codex Session, 원격 client는 template ID와 schema가 허용한 typed args만 선택할 수 있고 executable, argv template, cwd, environment policy를 만들거나 바꿀 수 없다. daemon은 shell/interpreter 문자열을 합성하지 않고 고정 executable ID와 검증된 argv 배열을 사용하며, environment는 `inherit=false`인 clean base에 등록된 variable/secret reference만 주입한다.
 
 ### 3.3 Session
 
@@ -226,6 +280,8 @@ type TurnState = "queued" | "running" | "needs_input" | "succeeded" | "failed" |
 interface Turn {
   id: string;
   sessionId: string;
+  taskAttemptId: string | null;
+  dispatchId: string | null;
   state: TurnState;
   revision: number;
   startedAt: string | null;
@@ -234,6 +290,8 @@ interface Turn {
   failure: FailureSummary | null;
 }
 ```
+
+독립 Session의 Turn은 `taskAttemptId`와 `dispatchId`가 모두 `null`이고, Plan Task가 만든 Turn은 둘 다 current pair로 고정한다. 둘 중 하나만 있거나 Task/Attempt의 current pair와 다른 runtime observation/result는 canonical Turn·Task 상태를 바꾸지 않는다.
 
 ### 3.5 Plan과 Task
 
@@ -250,7 +308,28 @@ interface Plan {
   revision: number;
   frozenHash: string | null;
   taskIds: string[];
-  policy: { maxParallelTasks: number; failureMode: "stop_dependents" | "pause_plan" };
+  checkpointSpecs: CheckpointSpec[];
+  policy: {
+    maxParallelTasks: number;
+    failureMode: "stop_dependents" | "pause_plan";
+    runBudgetId: string;
+  };
+}
+
+interface CheckpointSpec {
+  id: string;
+  trigger: "before_plan_start" | "before_dispatch" | "after_materialization" | "after_verification" | "before_integration" | "before_plan_completion";
+  title: string;
+  risk: "low" | "medium" | "high";
+  expiresAfterMs: number | null;
+}
+
+interface ArtifactConsumption {
+  artifactSpecId: string;
+  fromTaskId: string;
+  materialization:
+    | { strategy: "reference_only" }
+    | { strategy: "apply_commit"; order: number; expectedCommitOid: string };
 }
 
 interface Task {
@@ -261,16 +340,24 @@ interface Task {
   mode: "read_only" | "write";
   expectedScope: { readPatterns: string[]; writePatterns: string[] };
   risk: "low" | "medium" | "high";
-  humanCheckpoints: string[];
+  executionProfileId: string;
+  checkpointSpecs: CheckpointSpec[];
   state: TaskState;
   dependsOn: string[];
   lane: string | null;
+  resourceClaimIds: string[];
   sessionId: string | null;
   worktreeId: string | null;
   expectedArtifacts: ArtifactSpec[];
-  consumedArtifacts: Array<{ artifactSpecId: string; fromTaskId: string }>;
+  consumedArtifacts: ArtifactConsumption[];
   completionCriteria: CompletionCriteria;
-  verification: VerificationSpec[];
+  verification:
+    | { state: "draft"; specs: VerificationSpecInput[] }
+    | {
+        state: "resolved";
+        specs: VerificationSpec[];
+        resolvedAgainstProjectPolicyRevision: number;
+      };
   currentAttemptId: string | null;
   revision: number;
 }
@@ -282,21 +369,31 @@ interface CompletionCriteria {
   summaryRequired: boolean;
 }
 
-interface VerificationSpec {
+interface VerificationSpecInput {
   id: string;
-  templateId: string;
+  verificationTemplateId: string;
   args: Record<string, string | number | boolean>;
   timeoutMs: number;
   expectedExitCodes: number[];
 }
 
+interface VerificationSpec extends VerificationSpecInput {
+  verificationTemplateVersion: number;
+  verificationTemplateDigest: string;
+}
+
 interface VerificationResult {
   id: string;
   attemptId: string;
+  dispatchId: string;
   verificationSpecId: string;
+  verificationTemplateId: string;
   exitCode: number | null;
   durationMs: number;
   passed: boolean;
+  sourceTreeOid: string;
+  templateVersion: number;
+  templateDigest: string;
   redactedOutputArtifactId: string | null;
   revision: number;
 }
@@ -305,8 +402,11 @@ interface Artifact {
   id: string;
   artifactSpecId: string;
   producerTaskAttemptId: string;
+  producerDispatchId: string;
   kind: "file" | "commit" | "report" | "test_result";
   contentHash: string;
+  commitOid: string | null;
+  treeOid: string | null;
   reference: string;
   redactedHandoffSummary: string;
   createdAt: string;
@@ -317,18 +417,46 @@ interface TaskAttempt {
   id: string;
   taskId: string;
   ordinal: number;
-  state: "reserved" | "running" | "verifying" | "succeeded" | "failed" | "cancelled";
+  state: "reserved" | "materializing" | "running" | "verifying" | "succeeded" | "failed" | "cancelled";
+  health: "healthy" | "suspected_stall" | "stalled";
+  activeDispatchId: string | null;
   leaseId: string | null;
+  resourceLeaseId: string | null;
   sessionId: string | null;
   worktreeId: string | null;
   sourceTurnId: string | null;
+  contextPackageId: string | null;
+  runManifestId: string | null;
+  sourceTreeOid: string | null;
+  resultTreeOid: string | null;
+  lastActivityAt: string | null;
   resultSummary: string | null;
-  changedFiles: Array<{ pathDisplay: string; operation: "add" | "modify" | "delete" }>;
+  changedFiles: Array<{
+    projectRelativePath: string;
+    pathDisplay: string;
+    operation: "add" | "modify" | "delete";
+  }>;
   artifactIds: string[];
   verificationResultIds: string[];
   revision: number;
 }
+
+interface Dispatch {
+  id: string;
+  taskAttemptId: string;
+  ordinal: number;
+  operationId: string;
+  currentExecutionLeaseId: string | null;
+  currentResourceLeaseId: string | null;
+  state: "reserved" | "launching" | "active" | "outcome_unknown" | "completed" | "failed" | "cancelled";
+  issuedAt: string | null;
+  heartbeatAt: string | null;
+  terminalAt: string | null;
+  revision: number;
+}
 ```
+
+Plan이 `blocked`된 뒤 scope·resource·budget·checkpoint 정의를 바꾸려면 `blocked → editing → validated → frozen → confirmed`를 다시 거쳐야 한다. 이때 이미 존재하는 Attempt, Worktree, Artifact, 검증 결과는 지우지 않는다. 새 frozen revision은 아직 시작하지 않은 Task를 다시 검증하며, 이전 revision의 성공 Artifact를 재사용하려면 사용자가 새 문서에 `reference_only` 또는 `apply_commit` 소비로 명시하고 content hash/OID 검증을 통과해야 한다. 암묵적인 결과 승계는 금지한다.
 
 ### 3.6 Worktree
 
@@ -339,6 +467,9 @@ interface Worktree {
   owner: { type: "session"; sessionId: string } | { type: "task_attempt"; taskAttemptId: string };
   branch: string;
   baseRef: string;
+  baseOid: string;
+  currentTreeOid: string | null;
+  currentCommitOid: string | null;
   pathDisplay: string;
   gitCommonDirId: string;
   state: "reserved" | "ready" | "dirty" | "integrated" | "orphaned" | "removed";
@@ -349,6 +480,8 @@ interface Worktree {
 standalone `write+managed` Session은 `owner.type="session"`, Plan Task 실행은 새 attempt별 `owner.type="task_attempt"`를 사용한다. retry는 이전 worktree를 보존하고 새 TaskAttempt와 새 worktree를 만든다.
 
 `Artifact.artifactSpecId`는 frozen Plan의 `ArtifactSpec.id`를 반드시 참조한다. artifact id는 `(planFrozenHash, artifactSpecId, producerTaskAttemptId, outputOrdinal)`의 canonical encoding으로 결정적으로 생성해 crash/retry 중복을 막는다. 다른 attempt가 같은 spec을 생산해도 artifact id는 달라지며 TaskAttempt의 `artifactIds`와 후속 Task의 `consumedArtifacts.artifactSpecId`로 provenance를 닫는다.
+
+dependency 결과는 `ArtifactConsumption.materialization`으로만 후속 Attempt에 전달한다. `reference_only`는 content hash가 맞는 immutable report/test/file artifact를 ContextPackage에 참조하고 작업 트리를 바꾸지 않는다. `apply_commit`은 `expectedCommitOid`가 producer의 finalized commit artifact와 정확히 일치해야 하며, 새 dependent worktree를 Plan의 `baseGitRevision`에서 만든 뒤 `order` 오름차순으로 적용한다. 모든 producer Task는 dependency ancestor여야 하고 같은 `order`는 validation 오류다. fan-in 중 한 commit이라도 충돌하거나 OID가 달라지면 적용을 멈추고 부분 적용 worktree를 보존한 채 Task와 Plan을 `blocked`로 만들며 `integration_required` Attention을 생성한다. 자동 충돌 해결, 다른 artifact로 fallback, remaining commit 계속 적용은 금지한다.
 
 ### 3.7 Approval
 
@@ -419,6 +552,7 @@ interface QueueEntry {
 interface ExecutionLease {
   id: string;
   operationId: string;
+  generation: number;
   scopeGrants: Array<{
     queueId: string;
     queueEntryId: string;
@@ -426,6 +560,7 @@ interface ExecutionLease {
   }>;
   machineId: string;
   taskAttemptId: string | null;
+  dispatchId: string | null;
   acquiredAt: string;
   heartbeatAt: string;
   expiresAt: string;
@@ -434,13 +569,298 @@ interface ExecutionLease {
 }
 ```
 
-각 operation/TaskAttempt는 global, 대상 Machine, 대상 Project queue에 정확히 하나씩 총 세 QueueEntry를 가진다. composite `ExecutionLease.scopeGrants`도 세 scope를 모두 포함해야 한다. daemon은 한 transaction에서 세 queue의 상태/한도와 entry 선두 자격을 검사해 세 slot을 전부 reserve하거나 아무것도 reserve하지 않는다. 일부 acquire 상태는 commit할 수 없다.
+각 operation/TaskAttempt는 global, 대상 Machine, 대상 Project queue에 정확히 하나씩 총 세 QueueEntry를 가진다. composite `ExecutionLease.scopeGrants`도 세 scope를 모두 포함해야 한다. daemon은 한 transaction에서 세 queue의 상태/한도와 entry 선두 자격을 검사해 세 slot을 전부 reserve하거나 아무것도 reserve하지 않는다. 일부 acquire 상태는 commit할 수 없다. Plan Task dispatch에서는 operation row, 새 TaskAttempt/Dispatch, 세 queue grant, ExecutionLease, ResourceLease와 budget debit을 같은 journal transaction에 기록하고 commit한 뒤에만 worktree 준비나 worker/runtime 호출을 시작한다. 외부 publish와 dispatch가 DB commit보다 먼저 일어나서는 안 된다.
 
-dispatch 실패 시 같은 transaction 또는 복구 operation으로 세 grant를 모두 rollback/release한다. heartbeat와 만료는 composite lease 전체에 적용한다. daemon 재시작 뒤 runtime operation과 세 entry를 reconcile하기 전에는 lease를 재발급하지 않는다. turn/attempt가 terminal이거나 dispatch가 취소되면 세 slot을 원자적으로 release하고 각 entry를 terminal로 만든다. rate/usage-limit은 관련 scope queue를 durable `paused`로 바꾸고 원인과 `resumeAfter`를 기록한다.
+dispatch 실패 시 같은 transaction 또는 복구 operation으로 세 grant를 모두 rollback/release한다. heartbeat와 만료는 composite lease 전체에 적용한다. daemon 재시작 뒤 runtime operation과 세 entry를 reconcile하기 전에는 lease를 재발급하지 않는다. turn/attempt가 terminal이거나 dispatch가 취소되면 현재 Task의 `currentAttemptId`와 Attempt의 `activeDispatchId`가 release 요청의 pair와 정확히 일치할 때만 세 slot을 원자적으로 release하고 각 entry를 terminal로 만든다. rate/usage-limit은 관련 scope queue를 durable `paused`로 바꾸고 원인과 `resumeAfter`를 기록한다.
 
 P0 기본 `needsInputSlotPolicy`는 `release_active_slot`이다. blocking 입력으로 Session이 `needs_input`이 되면 세 active-turn grant를 release하고 entry를 `paused(reason=waiting_on_input)`로 둔다. app-server process/thread는 resident로 남아 global/Machine/Project의 `residentNeedsInputCount`에 각각 1로 계수하며 별도 limit을 넘으면 새 dispatch를 멈춘다. `hold_active_slot`은 명시적 ProjectPolicy 선택일 때만 사용한다.
 
 사용자 응답이 접수돼도 blocker를 즉시 풀지 않는다. release 정책에서는 resume operation을 queue하고 세 scope composite lease를 다시 얻은 뒤에만 upstream approval/user-input response를 보낸다. daemon 재시작 시 `Thread.status`, active flags, pending Approval로 resident count와 paused entry를 복구하며, reconcile 전에는 slot이나 response를 중복 발급하지 않는다. nonblocking user input은 active slot/lease에 영향을 주지 않는다.
+
+### 3.9 오케스트레이션 안전 엔터티
+
+```ts
+type ResourceDescriptor =
+  | { kind: "path"; projectRelativePattern: string }
+  | { kind: "tcp_port"; port: number }
+  | { kind: "service"; registeredServiceId: string }
+  | { kind: "custom"; registeredResourceId: string };
+
+interface ResourceClaimInput {
+  id: string;
+  taskId: string;
+  resource: ResourceDescriptor;
+  mode: "shared" | "exclusive";
+}
+
+interface ResourceClaim {
+  id: string;
+  planId: string;
+  taskId: string;
+  kind: "path" | "tcp_port" | "service" | "custom";
+  canonicalKey: string;
+  keyDisplay: string;
+  mode: "shared" | "exclusive";
+  acquisitionOrder: number;
+  state: "declared" | "retired";
+  revision: number;
+}
+
+interface ResourceLease {
+  id: string;
+  taskAttemptId: string;
+  dispatchId: string;
+  generation: number;
+  claimIds: string[];
+  acquiredAt: string;
+  heartbeatAt: string;
+  expiresAt: string;
+  state: "active" | "released" | "expired";
+  revision: number;
+}
+
+interface RunBudgetUsage {
+  attempts: number;
+  wallTimeMs: number;
+  peakResidentRuntimes: number;
+  outputBytes: number;
+  worktreeBytes: number;
+  tokens: number | null;
+  costMicros: number | null;
+}
+
+interface RunBudget {
+  id: string;
+  planId: string;
+  limits: RunBudgetLimits;
+  usage: RunBudgetUsage;
+  metering: { tokens: "supported" | "unavailable"; cost: "supported" | "unavailable" };
+  state: "active" | "exhausted" | "cancelled";
+  exhaustedDimensions: Array<keyof RunBudgetLimits>;
+  startedAt: string | null;
+  revision: number;
+}
+
+interface Checkpoint {
+  id: string;
+  planId: string;
+  taskId: string | null;
+  taskAttemptId: string | null;
+  specId: string;
+  trigger: CheckpointSpec["trigger"];
+  risk: CheckpointSpec["risk"];
+  impactDigest: string;
+  state: "pending" | "satisfied" | "declined" | "expired" | "cancelled";
+  expiresAt: string | null;
+  revision: number;
+}
+
+interface ContextPackage {
+  id: string;
+  taskAttemptId: string;
+  planFrozenHash: string;
+  taskInstructionHash: string;
+  instructionSources: Array<{
+    kind: "user_goal" | "task" | "project_instruction" | "artifact_handoff";
+    sourceId: string;
+    contentHash: string;
+    trust: "user" | "project" | "agent_output";
+  }>;
+  consumedArtifacts: Array<{ artifactId: string; contentHash: string; materialization: "reference_only" | "apply_commit" }>;
+  sizeBytes: number;
+  digest: string;
+  revision: 1;
+}
+
+interface RunManifest {
+  id: string;
+  taskAttemptId: string;
+  dispatchId: string;
+  planFrozenHash: string;
+  projectPolicyRevision: number;
+  executionProfileId: string;
+  executionProfileDigest: string;
+  model: string;
+  runtimeVersion: string;
+  adapterVersion: string;
+  baseGitRevision: string;
+  sourceTreeOid: string;
+  contextPackageId: string;
+  contextPackageDigest: string;
+  createdAt: string;
+  revision: 1;
+}
+```
+
+`ResourceClaim.canonicalKey`는 client 문자열을 그대로 사용하지 않고 daemon이 등록 Project와 typed resource descriptor에서 계산한다. 원격 projection은 민감한 canonical path/service identity 대신 `keyDisplay`만 반환한다. 획득 순서는 `(kind rank, canonicalKey UTF-8 byte order, claim id)`의 전역 순서로 다시 계산하며 입력에 의존해 순서를 바꾸지 않는다. 한 Attempt/Dispatch의 모든 claim과 세 scope ExecutionLease를 한 transaction에서 전부 획득하거나 전부 포기한다. 같은 key의 shared lease끼리만 공존하고 exclusive lease는 다른 모든 mode를 배제한다. lease heartbeat/TTL은 daemon 재시작 뒤 managed Attempt/Dispatch와 실제 자원을 reconcile하기 전 자동 재발급하지 않는다. claim은 frozen Plan의 일부라 standalone mutation을 제공하지 않으며, 생성·retire는 `PATCH /plans/{id}`의 Plan revision과 idempotency key에 묶인다. ResourceLease는 daemon 내부에서만 전이하고 `(taskAttemptId, dispatchId, generation, sortedClaimIds)` unique key로 중복 획득을 막는다. 같은 pair가 입력 대기 뒤 재개되면 generation을 단조 증가시키며 stale generation의 heartbeat/release도 current lease를 바꾸지 못한다.
+
+RunBudget limit은 Project ceiling보다 같거나 좁아야 하며 confirm된 뒤 확장할 수 없다. `maxTasks`와 `maxDepth`는 validation에서, attempt 수는 dispatch 전에, resident/output/worktree/wall-time은 실행 중 계측한다. 신뢰할 수 있는 usage capability가 있을 때 token/cost도 같은 방식으로 debit한다. usage debit은 `(budgetId, sourceEventId 또는 providerUsageSampleId)`로 멱등 처리하며 값이 감소하거나 같은 sample이 중복 반영되지 않는다. 어느 hard cap이든 도달하면 새 dispatch를 중단하고 RunBudget과 Plan을 각각 `exhausted`, `blocked`로 만든 뒤 `budget_exhausted` Attention을 생성한다. 실행 중 Attempt에는 먼저 typed interrupt를 요청하며, 강제 종료 규칙은 아래 stall 정책을 따른다.
+
+Checkpoint는 Codex가 보낸 Approval이 아니라 Pawdex가 frozen Plan으로 만든 durable decision gate다. Plan-level spec은 `before_plan_start`/`before_plan_completion`, Task-level spec은 나머지 trigger를 사용하며 trigger에 도달하면 해당 Task/Plan 진행을 막고 `checkpoint_required` Attention을 만든다. `satisfied` 전에는 다음 단계로 진행할 수 없으며 high-risk checkpoint는 device-bound 잠금 해제 UI receipt가 필요하다. 응답은 `expectedCheckpointRevision`과 `Idempotency-Key`에 묶이고 음성·알림 quick action은 만족 결정을 제출할 수 없다.
+
+ContextPackage와 RunManifest는 생성 후 불변이며 각각 revision은 항상 1이다. RunManifest는 TaskAttempt와 그 실행을 실제 runtime에 전달한 Dispatch ID를 함께 결박한다. 후속 작업에는 선언된 artifact와 redacted handoff만 포함하고 다른 Session의 전체 대화, secret 질문 답, 환경 변수는 포함하지 않는다. project/agent-output instruction은 user/ProjectPolicy보다 높은 권한을 만들 수 없고 tool·network·approval 정책으로 해석되지 않는다.
+
+TaskAttempt activity는 runtime status, item 시작/종료, command progress, Approval lifecycle처럼 검증 가능한 신호로 갱신한다. 모든 runtime observation, heartbeat, completion, Artifact, VerificationResult와 lease release에는 `taskAttemptId`와 `dispatchId`가 함께 있어야 하며, reducer는 Task의 현재 Attempt와 그 Attempt의 active Dispatch가 모두 일치할 때만 canonical projection을 바꾼다. 늦은 이전 Dispatch 결과는 redacted stale 진단으로만 남기고 성공 처리, artifact 채택, verification 통과, lease 해제 또는 integration에 사용하지 않는다. `suspectedAfterMs`까지 신호가 없으면 `suspected_stall`, `attentionAfterMs`까지 없으면 `stalled` health와 `task_blocked` Attention을 기록하되 이것만으로 성공·실패를 추정하거나 프로세스를 죽이지 않는다. 사용자가 interrupt하거나 hard wall-time cap이 도달하면 `turn/interrupt`를 먼저 보내고 `interruptGraceMs`를 기다린다. 이후에도 살아 있을 때는 daemon의 process registry에서 해당 Attempt/Dispatch가 **독점 소유한** PID와 start identity가 일치하는 process tree만 종료할 수 있다. 공유 app-server, 소유 불명 PID, 다른 Session의 process를 kill하지 않으며 필요한 경우 runtime 전체 재시작을 별도 로컬 확인 대상으로 승격한다.
+
+### 3.10 P1 Usage Window Runner
+
+```ts
+interface UsageWindowPresetPolicy {
+  controlQueueId: string;
+  queueIds: string[];
+  eligible: Array<{ planId: string; planFrozenHash: string; taskIds: string[] }>;
+  bucketTargets: Array<{
+    providerAdapterId: string;
+    bucketId: string;
+    targetUsedPercent: { min: number; max: number };
+    reserveFloorPercent: number;
+  }>;
+  maxSnapshotAgeMs: number;
+  stopLaunchingBeforeResetMs: number;
+  maxConcurrency: number;
+  failureThreshold: number;
+  budgetPolicy: { mode: "respect_existing"; stopOnCostUnknown: boolean };
+}
+
+interface UsageWindowPreset extends UsageWindowPresetPolicy {
+  id: string;
+  projectId: string;
+  name: string;
+  digest: string;
+  eligibleSetDigest: string;
+  state: "active" | "retired";
+  revision: number;
+}
+
+interface RateLimitSnapshotRef {
+  id: string;
+  digest: string;
+  providerAdapterId: string;
+  sourceMethodId: string;
+  authority: "provider_authoritative" | "runtime_estimate";
+  redactedAccountId: string; // install-local stable pseudonymous binding; 원문 account ID 아님
+  buckets: Array<{
+    bucketId: string;
+    usedPercent: number;
+    windowDurationMins: number;
+    resetsAt: string;
+  }>;
+  observedAt: string;
+  validUntil: string;
+  freshness: "fresh" | "stale" | "unknown";
+}
+
+interface UsageForecast {
+  taskId: string;
+  providerAdapterId: string;
+  bucketId: string;
+  unit: "used_percent_points";
+  min: number;
+  likely: number;
+  max: number;
+  confidence: "low" | "medium" | "high";
+  source: "local_attempt_history";
+  sampleCount: number;
+  calculatedAt: string;
+  validUntil: string;
+  freshness: "fresh" | "stale" | "unknown";
+}
+
+type UsageForecastSource =
+  | {
+      kind: "attempt_lifecycle";
+      sourceEventId: string;
+      taskAttemptId: string;
+      dispatchId: string;
+      phase: "reserved" | "running" | "succeeded" | "failed" | "cancelled";
+    }
+  | {
+      kind: "rate_limit_observation";
+      sourceEventId: string;
+      snapshotId: string;
+      snapshotDigest: string;
+    };
+
+type UsageWindowStopReason =
+  | "target_band_reached"
+  | "queue_empty"
+  | "no_safe_candidate"
+  | "window_changed"
+  | "account_binding_changed"
+  | "snapshot_stale_or_unknown"
+  | "reset_buffer_entered"
+  | "blocker_pending"
+  | "failure_threshold"
+  | "user_cancelled"
+  | "cost_or_credit_risk"
+  | "budget_exhausted"
+  | "reconciliation_required";
+
+interface UsageWindowRevisionBindings {
+  projectRevision: number;
+  queueBindings: Array<{
+    queueId: string;
+    queueRevision: number;
+    queueAdmissionPolicyDigest: string;
+  }>;
+  eligibleBindings: Array<{
+    planId: string;
+    planRevision: number;
+    planFrozenHash: string;
+    tasks: Array<{
+      taskId: string;
+      taskRevision: number;
+      taskDefinitionDigest: string;
+      queueEntries: Array<{ queueId: string; queueEntryId: string; queueEntryRevision: number }>;
+    }>;
+  }>;
+  digest: string;
+}
+
+interface UsageWindowRun {
+  id: string;
+  presetId: string;
+  presetRevision: number;
+  presetDigest: string;
+  effectivePresetPolicy: UsageWindowPresetPolicy;
+  projectId: string;
+  projectPolicyDigestAtStart: string;
+  startedByDeviceId: string;
+  startedByDeviceKind: "local_controller" | "paired_remote";
+  userPresenceReceiptDigest: string;
+  startBindingsDigest: string;
+  startRevisionBindings: UsageWindowRevisionBindings;
+  currentRevisionBindings: UsageWindowRevisionBindings;
+  state: "running" | "stopped" | "cancelled" | "failed";
+  startSnapshot: RateLimitSnapshotRef;
+  latestSnapshot: RateLimitSnapshotRef;
+  startPreviewId: string;
+  startPreviewDigest: string;
+  eligibleSetDigest: string;
+  forecasts: UsageForecast[];
+  forecastRevision: number;
+  lastForecastSource: UsageForecastSource;
+  admittedDispatchIds: string[];
+  activeDispatchIds: string[];
+  completedAttemptIds: string[];
+  consecutiveFailureCount: number;
+  stopReason: UsageWindowStopReason | null;
+  summaryAttentionId: string | null;
+  startedAt: string;
+  stoppedAt: string | null;
+  revision: number;
+}
+```
+
+이 계약은 P1 확장이며 P0 scheduler의 권한을 넓히지 않는다. OpenAI provider adapter가 capability로 제공하는 `account/rateLimits/read`/`account/rateLimits/updated` 관찰은 bucket별 `usedPercent`, `windowDurationMins`, `resetsAt`의 source가 될 수 있지만 이 문서의 Codex Session event mapping에 새 상태 전이를 추가하지 않는다. `account/usage/read`의 lifetime/daily token activity는 exact remaining token 또는 Task forecast의 authoritative source가 아니다.
+
+UsageWindowPreset은 잠금 해제된 local-admin UI에서만 생성·수정·retire하며 각 revision의 canonical preset digest와 sorted eligible membership digest를 보존하고 Project/Queue/Plan/Task/RunBudget보다 넓은 권한이나 예산을 만들 수 없다. 새 preset은 `active`, `retired`는 terminal이며 active revision 수정은 이미 시작한 Run의 봉인된 값을 바꾸지 않는다. `queueIds`, eligible set, 각 eligible entry의 Task ID, bucket target은 각각 비어 있을 수 없고 ID는 중복될 수 없다. `controlQueueId`는 `queueIds` 중 정확히 하나여야 한다. 한 preset의 모든 bucket target은 같은 `providerAdapterId`를 사용해야 하며 여러 provider를 다루려면 별도 preset/Run을 만든다. 각 reserve는 `0 ≤ reserveFloorPercent < 100`, target은 `0 ≤ min ≤ max ≤ 100 - reserveFloorPercent`를 만족해야 하며 `maxSnapshotAgeMs`, `stopLaunchingBeforeResetMs`, `maxConcurrency`, `failureThreshold`는 양의 유한 정수여야 한다. preset의 snapshot age는 provider adapter capability hard ceiling보다 클 수 없고 effective age는 더 좁은 값이다. snapshot은 `freshness="fresh"`, provider-authoritative source이고 `now - observedAt ≤ effectiveMaxSnapshotAgeMs`, `now < validUntil`일 때만 start/admission에 fresh다. UsageWindowRun 시작은 active install-bound `local_controller` 또는 active `paired_remote` Device의 잠금 해제·인증 foreground UI가 같은 7.6 challenge를 완료해 발급한 fresh one-time user-presence receipt, exact preset revision/digest, fresh snapshot과 현재 preview에 묶인 별도 명령이다. daemon은 현재 인증 transport에서 actor Device ID/kind와 channel binding을 결정하며 body의 자기 주장 값으로 대체하지 않는다. `paired_remote`에는 현재 `usage_window.start` action capability가 필요하고, `local_controller`는 동일 receipt 검증을 통과하면서 install-local local-admin channel에서만 허용된다. OpenAI adapter에서는 `account/rateLimits/read` 또는 `account/rateLimits/updated`만 이 snapshot source가 될 수 있고 `account/usage/read`는 될 수 없다. 원격 actor는 preset/queue/task/scope를 바꿀 수 없다. forecast는 로컬 과거 sample의 `min/likely/max`, confidence, source, freshness를 그대로 표시하며 `(taskId, providerAdapterId, bucketId)`가 identity다. admission은 forecast `max`를 사용하고 bounded fresh max가 없으면 launch하지 않는다.
+
+governed Attempt의 reserve/start/complete/fail/cancel lifecycle 또는 fresh rate-limit observation마다 forecast와 candidate set을 다시 계산한다. candidate pass는 Queue priority/order로 결정적으로 순회해 첫 safe candidate를 고른다. terminal/active/duplicate 또는 현재 bounded fresh forecast가 여유에 맞지 않는 entry만 typed skip reason을 남기고 그 pass에서 건너뛸 수 있으며 durable Queue 순서는 바꾸지 않는다. sealed membership·revision/definition mismatch, Approval/Checkpoint와 dependency/resource/scope/reconciliation blocker는 skip하지 않고 각각 `blocker_pending` 또는 `reconciliation_required`로 멈춘다. 시작 snapshot과 비교해 `redactedAccountId`, bucket set, `windowDurationMins` 또는 `resetsAt`이 바뀌면 각각 `account_binding_changed` 또는 `window_changed`로 새 launch를 멈춘다. 목표 band 진입, queue 고갈, stale/unknown snapshot, reset buffer 진입, blocker/Approval/Checkpoint, consecutive failure threshold, user cancel, cost/credit risk 또는 기존 RunBudget exhaustion도 새 launch를 멈춘다. slot과 queue가 남아도 safe candidate가 없고 eligibility를 바꿀 active governed Attempt/Dispatch가 없으면 즉시 `no_safe_candidate`로 멈춘다. active Attempt를 기다리는 경우도 기존 wall-time/stall cap과 reset buffer까지만 허용하며 무기한 polling하지 않는다. 모든 terminal stop은 `effectivePresetPolicy.controlQueueId`를 target으로 한 `usage_window_run_stopped` Attention을 만든다. 이는 active Attempt를 임의 종료하거나 정확한 100% 소진을 보장한다는 뜻이 아니다. eligible set 밖 Task, filler, duplicate를 만들지 않으며 credit/earned reset 소비, 결제/overage, account hot-swap은 어떤 transition에도 포함하지 않는다.
+
+UsageWindowRun은 초기 snapshot/preview 검증과 `started` event를 한 transaction에 commit할 때 곧바로 `running`으로 생성한다. 이때 exact preset revision의 `UsageWindowPresetPolicy` 값을 Run 안에 immutable snapshot으로 복제하고 preset/eligible digest로 검증한다. 이후 preset을 수정·retire해도 active Run은 이 snapshot의 target/reserve/concurrency/failure/budget/control Queue를 평가한다. 인증 actor Device ID/kind와 channel binding·one-time user-presence receipt의 digest만 보존하고 원 channel/receipt는 재사용 가능한 형태로 저장하지 않는다. validation 실패는 aggregate를 만들지 않는다. `user_cancelled`만 `running → cancelled`, `reconciliation_required`만 `running → failed`, 나머지 stop reason은 `running → stopped`를 사용한다. 세 terminal 상태는 재개하지 않으며 조건이 다시 유효해져도 새 start action과 새 run ID가 필요하다. `usage_window_run_stopped`는 Attention kind일 뿐 stop reason이나 Run state가 아니다.
+
+`startRevisionBindings`는 사용자가 본 exact Project/Queue/Plan/Task/QueueEntry revision과 authorization identity의 감사 기록으로 불변이다. `currentRevisionBindings`는 admission별 CAS cursor다. 같은 Run이 만든 Plan/Task/Queue/QueueEntry lifecycle transition은 그 transaction에서 post-transition revision으로 cursor를 함께 올린다. 다른 canonical event로 revision이 전진하면 daemon은 `projectPolicyDigestAtStart`, 각 queue admission-policy digest, Plan frozen hash, Task definition digest와 QueueEntry ID/membership이 그대로이고 새 상태가 여전히 eligible임을 확인한 뒤에만 `usage_window_run.bindings_advanced`와 current cursor를 별도 journal transaction에 함께 기록할 수 있다. 이 전이는 `(usageWindowRunId, sourceEventId)`로 멱등 처리하고 from/to binding digest와 authorization recheck digest를 보존한다. authorization/definition/membership이 달라지면 `blocker_pending`, event 귀속이나 결과가 불명확하면 `reconciliation_required`로 멈춘다. 각 admission은 갱신된 current cursor 전체를 CAS하며 start revision을 현재값으로 잘못 재사용하지 않는다.
 
 ## 4. 세션 상태 머신
 
@@ -479,6 +899,8 @@ reducer 우선순위:
 upstream mapping 또는 reconciliation reducer가 Session의 계산 상태를 바꾸면 projection update와 canonical `session.state_changed` append를 반드시 같은 SQLite transaction에서 수행한다. `session.runtime_status_observed`, Approval/Turn 이벤트만 발행한 채 Session 상태를 암묵적으로 바꾸는 것은 금지한다. 계산 결과가 기존 상태와 같으면 중복 state event를 발행하지 않는다.
 
 `serverRequest/resolved.requestId`는 같은 runtime connection의 정확히 한 request만 해결한다. 다른 pending request와 attention은 유지한다. 응답을 보낸 순간에도 approval을 terminal로 확정하지 않고 `serverRequest/resolved` 또는 reconciliation 결과를 기다린다.
+
+`thread/start`, `thread/resume`, `thread/fork`, `turn/start`처럼 응답의 upstream ID를 받기 전에 관련 notification이 도착할 수 있는 호출은 operation별 **acquisition window**를 사용한다. adapter는 schema를 통과한 frame만 bounded buffer에 보관하며 ProjectPolicy의 최대 frame 수, 총 byte, 대기 시간을 모두 적용한다. 응답으로 `(operationId, sessionId, taskAttemptId?, dispatchId?, upstreamId)` 매핑이 확정되면 buffered frame을 수신 순서대로 하나의 복구 가능한 journal transaction에서 reduce하고 commit 뒤에만 publish한다. buffer overflow, timeout, 응답/ID 불일치가 발생하면 frame을 버리거나 추정 Session/Attempt에 귀속하지 않고 operation과 관련 Dispatch를 `outcome_unknown`으로 기록하며 mutation/lease 재사용을 멈추고 `reconciliation_required` Attention을 만든다. thread list/read와 runtime active 상태로 reconcile하기 전 blind retry, 성공 추정, lease 해제는 금지한다. buffer 원문은 일반 로그나 원격 진단에 복사하지 않는다.
 
 ### 4.3 upstream 이벤트 매핑
 
@@ -521,7 +943,7 @@ interface PawdexEvent<T = unknown> {
   type: EventType;
   occurredAt: string;
   aggregate: {
-    type: "machine" | "project" | "session" | "turn" | "plan" | "task" | "task_attempt" | "worktree" | "queue" | "queue_entry" | "lease" | "artifact" | "verification" | "approval" | "attention" | "notification_policy" | "notification" | "device";
+    type: "machine" | "project" | "session" | "turn" | "plan" | "task" | "task_attempt" | "dispatch" | "worktree" | "queue" | "queue_entry" | "lease" | "resource_claim" | "resource_lease" | "run_budget" | "usage_window_preset" | "usage_window_run" | "checkpoint" | "context_package" | "run_manifest" | "artifact" | "verification" | "approval" | "attention" | "notification_policy" | "notification" | "device";
     id: string;
     revision: number;
   };
@@ -544,7 +966,7 @@ interface PawdexEvent<T = unknown> {
 
 ### 5.2 EventType
 
-MVP canonical event:
+canonical event registry다. `usage_window_*`와 `device.action_capabilities_changed`는 P1 capability가 활성화된 경우에만 발행하며 P0 구현의 출시 게이트를 넓히지 않는다.
 
 ```text
 machine.runtime_state_changed
@@ -567,10 +989,15 @@ attention.created
 attention.acknowledged
 attention.resolved
 plan.created
+plan.definition_changed
 plan.state_changed
 task.state_changed
 task_attempt.created
 task_attempt.state_changed
+task_attempt.health_changed
+dispatch.created
+dispatch.state_changed
+dispatch.heartbeat_observed
 worktree.created
 worktree.orphaned
 worktree.integrated
@@ -581,35 +1008,79 @@ queue_entry.state_changed
 lease.acquired
 lease.renewed
 lease.released
+lease.expired
+resource_claim.declared
+resource_claim.retired
+resource_lease.acquired
+resource_lease.renewed
+resource_lease.released
+resource_lease.expired
+run_budget.created
+run_budget.usage_changed
+run_budget.exhausted
+run_budget.cancelled
+usage_window_preset.created
+usage_window_preset.changed
+usage_window_preset.retired
+usage_window_run.started
+usage_window_run.bindings_advanced
+usage_window_run.forecast_recomputed
+usage_window_run.task_admitted
+usage_window_run.state_changed
+checkpoint.created
+checkpoint.state_changed
+context_package.created
+run_manifest.created
 verification.completed
 artifact.created
 notification.delivery_changed
 notification_policy.changed
 device.paired
+device.action_capabilities_changed
 device.revoked
 ```
 
-Session, Turn, Plan, Task, TaskAttempt, Queue, QueueEntry의 상태 전이는 각 aggregate의 `*.state_changed`가 유일한 canonical event다. 이 aggregate들에 `succeeded`/`failed` 같은 중복 event 이름을 별도 발행하지 않는다. Worktree, Approval, Attention, Lease, Device는 위 목록에 명시한 lifecycle event 이름을 사용한다. `session.runtime_status_observed`는 reconciliation의 source status와 active flags를 기록할 필요가 있을 때만 durable하게 남긴다.
+Session, Turn, Plan, Task, TaskAttempt, Dispatch, Queue, QueueEntry, Checkpoint, UsageWindowRun의 상태 전이는 각 aggregate의 `*.state_changed`가 유일한 canonical event다. 이 aggregate들에 `succeeded`/`failed` 같은 중복 event 이름을 별도 발행하지 않는다. `plan.definition_changed`는 Task/Checkpoint/ResourceClaim/RunBudget을 포함한 canonical Plan document mutation을 나타내고 상태 전이를 겸하지 않는다. `dispatch.heartbeat_observed`와 UsageWindowRun의 binding/forecast/admission event도 상태 전이를 겸하지 않으며 revision과 snapshot 값이 같은 journal record로 수렴해야 한다. Worktree, Approval, Attention, ExecutionLease, ResourceClaim, ResourceLease, RunBudget, UsageWindowPreset, Device는 위 목록에 명시한 lifecycle event 이름을 사용한다. ContextPackage와 RunManifest는 revision 1의 create event만 가진다. `session.runtime_status_observed`는 reconciliation의 source status와 active flags를 기록할 필요가 있을 때만 durable하게 남긴다. Usage Window event는 P1 provider adapter observation에서 파생되며 Codex Session event mapping을 추가하지 않는다.
 
 핵심 payload 최소 필드:
 
 | event | 최소 payload |
 |---|---|
 | `session.state_changed` | `from`, `to`, `reason`, `activeTurnId`, `blockingRequestCount` |
-| `turn.state_changed` | `sessionId`, `from`, `to`, `runtimeTurnId`, `failure?` |
+| `turn.state_changed` | `sessionId`, task-bound이면 current `attemptId`/`dispatchId`, `from`, `to`, `runtimeTurnId`, `failure?` |
+| `session.runtime_status_observed` | `sessionId`, task-bound이면 current `attemptId`/`dispatchId`, upstream status/active flags, observation ID |
 | `approval.requested` | `approvalId`, `sessionId`, `kind`, `isBlocking`, `explicitConfirmationRequired`, redacted request summary |
 | `approval.resolved` | `approvalId`, `resolution`, `resolvedByRuntime`, `remainingBlockingCount` |
-| `attention.created` | `attentionId`, `sessionId`, `kind`, `blocking`, `sourceId` |
+| `attention.created` | `attentionId`, typed `target`, `kind`, `blocking`, typed `source` |
+| `plan.definition_changed` | `planId`, `fromRevision`, canonical document digest, changed section names |
 | `task.state_changed` | `planId`, `taskId`, `from`, `to`, `reason`, `currentAttemptId?` |
-| `task_attempt.state_changed` | `taskId`, `attemptId`, `ordinal`, `from`, `to`, `leaseId?`, `sessionId?`, `worktreeId?` |
+| `task_attempt.state_changed` | `taskId`, `attemptId`, current `dispatchId`, `ordinal`, `from`, `to`, `leaseId?`, `sessionId?`, `worktreeId?` |
+| `task_attempt.health_changed` | `taskId`, `attemptId`, current `dispatchId`, `from`, `to`, `lastActivityAt`, `reason` |
+| `dispatch.state_changed` | `taskId`, `attemptId`, `dispatchId`, `ordinal`, `from`, `to`, `operationId`, `reason` |
+| `dispatch.heartbeat_observed` | `attemptId`, `dispatchId`, `heartbeatAt`, redacted source identity |
 | `worktree.created` | `worktreeId`, `ownerType`, `ownerId`, `branch`, redacted path id, `baseRef`, `gitCommonDirId` |
 | `queue.state_changed` | `queueId`, `scope`, `from`, `to`, `pauseReason`, `resumeAfter` |
 | `queue_entry.state_changed` | `queueEntryId`, `operationId`, `from`, `to`, `pauseReason`, `leaseId?` |
-| `lease.acquired` | `leaseId`, `operationId`, 세 scope의 `queueId`/`queueEntryId`, `taskAttemptId?`, `expiresAt` |
-| `verification.completed` | `attemptId`, `verificationResultId`, `templateId`, `exitCode`, `durationMs`, `passed` |
+| `lease.acquired` | `leaseId`, `operationId`, `generation`, 세 scope의 `queueId`/`queueEntryId`, `taskAttemptId?`, `dispatchId?`, `expiresAt` |
+| `lease.renewed`/`lease.released` | `leaseId`, `generation`, task-bound이면 current `taskAttemptId`/`dispatchId`, source operation ID, 시각 |
+| `resource_lease.acquired` | `resourceLeaseId`, `taskAttemptId`, `dispatchId`, `generation`, 정렬된 `claimIds`, `expiresAt` |
+| `resource_lease.renewed`/`resource_lease.released` | `resourceLeaseId`, current `taskAttemptId`, `dispatchId`, `generation`, source operation ID, 시각 |
+| `run_budget.usage_changed` | `budgetId`, `planId`, usage delta, source sample id, remaining summary |
+| `run_budget.exhausted` | `budgetId`, `planId`, `exhaustedDimensions`, 최종 usage |
+| `run_budget.cancelled` | `budgetId`, `planId`, cancellation reason, 최종 usage |
+| `usage_window_preset.changed` | `presetId`, `projectId`, preset/eligible-set digest, changed section names |
+| `usage_window_run.started` | `runId`, `presetId`/revision/digest, immutable effective-policy digest와 control Queue ID, actor Device ID/kind와 channel binding·receipt digest, start/current Project/Queue/Plan/Task/QueueEntry binding digest, snapshot/preview/eligible-set digest |
+| `usage_window_run.bindings_advanced` | `runId`, source event ID, from/to current binding digest, authorization identity recheck digest, reason |
+| `usage_window_run.forecast_recomputed` | `runId`, `forecastRevision`, typed `UsageForecastSource`, source snapshot ID/digest, forecast digest, calculatedAt |
+| `usage_window_run.task_admitted` | `runId`, `taskId`, `queueEntryIds`, `attemptId`, `dispatchId`, forecast digest, current snapshot digest |
+| `usage_window_run.state_changed` | `runId`, `from`, `to`, `stopReason?`, final snapshot/summary digest |
+| `checkpoint.state_changed` | `checkpointId`, `planId`, `taskId?`, `from`, `to`, `actorDeviceId?` |
+| `verification.completed` | `attemptId`, `dispatchId`, `verificationResultId`, `verificationTemplateId`/version/digest, `sourceTreeOid`, `exitCode`, `durationMs`, `passed` |
+| `artifact.created` | `artifactId`, `artifactSpecId`, producer `attemptId`/`dispatchId`, kind, content hash, commit/tree OID |
 | `notification.delivery_changed` | `deliveryId`, `deviceId`, `attentionId`, `policyRevision`, `stage`, `dedupKey`, `from`, `to` |
+| `device.action_capabilities_changed` | `deviceId`, redacted granted/revoked action capability names, actor device ID |
 
-한 command transaction의 event 순서는 결정적이다. `operations` row를 먼저 생성하고 projection을 갱신한 뒤, aggregate type 순서 `machine → project → plan → task → task_attempt → worktree → queue → queue_entry → lease → session → turn → verification → artifact → approval → attention → notification_policy → notification → device`, 같은 type이면 aggregate id 순서로 event를 append한다. outbox는 마지막에 만들고 commit 후 sequence 순으로 publish한다.
+한 command transaction의 event 순서는 결정적이다. `operations` row를 먼저 생성하고 projection을 갱신한 뒤, aggregate type 순서 `machine → project → usage_window_preset → plan → run_budget → usage_window_run → task → task_attempt → dispatch → resource_claim → worktree → queue → queue_entry → lease → resource_lease → context_package → run_manifest → session → turn → checkpoint → verification → artifact → approval → attention → notification_policy → notification → device`, 같은 type이면 aggregate id 순서로 event를 append한다. outbox는 마지막에 만들고 commit 후 sequence 순으로 publish한다. worker/runtime dispatch도 이 commit 뒤에만 수행한다.
 
 ### 5.3 Ephemeral frame
 
@@ -649,7 +1120,16 @@ ephemeral frame은 durable `sequence`와 aggregate `revision`을 갖지 않으�
     "plans": [],
     "tasks": [],
     "taskAttempts": [],
+    "dispatches": [],
     "worktrees": [],
+    "resourceClaims": [],
+    "resourceLeases": [],
+    "runBudgets": [],
+    "usageWindowPresets": [],
+    "usageWindowRuns": [],
+    "checkpoints": [],
+    "contextPackages": [],
+    "runManifests": [],
     "queues": [],
     "queueEntries": [],
     "leases": [],
@@ -666,7 +1146,7 @@ ephemeral frame은 durable `sequence`와 aggregate `revision`을 갖지 않으�
 
 snapshot 적용 중 발생한 event는 `baseSequence + 1`부터 같은 연결에서 이어서 전송한다.
 
-snapshot의 각 mutable entity는 자신의 aggregate `revision`을 포함한다. 클라이언트는 같은 권한 scope의 기존 projection을 snapshot으로 원자 교체하고 `baseSequence` 이후 durable event만 적용한다. revoked Device, open/최근 terminal NotificationDelivery, referenced Artifact와 VerificationResult는 retention 기간 동안 포함해 오프라인 클라이언트가 삭제·전송·검증 결과를 오판하지 않게 한다. snapshot에 없는 secret answer, raw audio, ephemeral delta는 복구 대상이 아니다.
+snapshot의 각 mutable entity는 자신의 aggregate `revision`을 포함한다. 클라이언트는 같은 권한 scope의 기존 projection을 snapshot으로 원자 교체하고 `baseSequence` 이후 durable event만 적용한다. active ResourceLease·RunBudget·Checkpoint, active/recent terminal Dispatch, P1 UsageWindowPreset/Run과 실행 중 Attempt가 참조하는 revision-1 ContextPackage/RunManifest를 포함한다. revoked Device, open/최근 terminal NotificationDelivery, referenced Artifact와 VerificationResult는 retention 기간 동안 포함해 오프라인 클라이언트가 삭제·전송·검증 결과를 오판하지 않게 한다. snapshot에 없는 secret answer, raw audio, acquisition buffer 원문, ephemeral delta는 복구 대상이 아니다.
 
 ## 6. 명령 API
 
@@ -697,12 +1177,14 @@ snapshot의 각 mutable entity는 자신의 aggregate `revision`을 포함한다
     "server": {
       "voice": ["transcript_input"],
       "notifications": ["mac_local", "web_push"],
-      "orchestration": ["manual_parallel", "dag"]
+      "orchestration": ["manual_parallel", "dag", "dispatch_fencing", "resource_leases", "run_budget", "checkpoints", "usage_window_runner"]
     }
   },
   "meta": { "protocolVersion": 1, "requestId": "req_01...", "correlationId": "cor_01..." }
 }
 ```
+
+`usage_window_runner`는 P1 adapter/runtime/account capability와 정책이 모두 유효할 때만 포함한다. 지원하지 않거나 snapshot source가 불명확하면 누락하고 unavailable을 진단에 명시한다.
 
 `GET /diagnostics`는 Codex/adapter version, capability, runtime connection, queue 상태, journal lag, notification channel health, 최근 stable error code를 제공한다. 로컬 `diagnostics:read`는 redacted 상세를, 원격 `view`는 요약만 받는다. prompt, command/output 전문, 절대 경로, token, secret answer, raw app-server payload는 반환하지 않는다. snapshot은 상태 복구용이며 diagnostics를 대체하지 않는다.
 
@@ -712,7 +1194,7 @@ snapshot의 각 mutable entity는 자신의 aggregate `revision`을 포함한다
 |---|---|---|
 | GET | `/projects` | 등록 프로젝트 목록 |
 | POST | `/projects` | 로컬에서만 path 등록; 원격 등록 금지 기본 |
-| PATCH | `/projects/{projectId}/policy` | `expectedProjectRevision`으로 정책 변경 |
+| PATCH | `/projects/{projectId}/policy` | `expectedProjectRevision`으로 정책 변경; verification template 변경은 local-admin UI+receipt 전용 |
 | GET | `/sessions` | cursor pagination, state/project 필터 |
 | POST | `/sessions` | `CreateSessionCommand` |
 | GET | `/sessions/{sessionId}` | session projection |
@@ -774,7 +1256,7 @@ daemon은 mutation을 받으면 upstream 호출보다 먼저 operation row를 �
 
 P0 쓰기는 로컬·원격 모두 반드시 `worktree="managed"`다. 독립 Session의 `write+managed` 생성은 daemon이 Session 소유 worktree를 먼저 예약·생성한 뒤 그 정확한 cwd로 thread를 시작한다. Plan 실행 Session은 Task가 아니라 현재 TaskAttempt 소유 worktree를 사용한다. 두 경우 모두 Worktree projection의 `ownerType`/`ownerId`로 소유자가 닫힌다. worktree 실패 시 thread를 기본 checkout으로 우회하지 않는다. 원격 클라이언트가 임의 `cwd`, sandbox 문자열, approval policy 또는 `danger-full-access`를 body로 넘길 수 없다.
 
-모든 mutation은 `Idempotency-Key`와 대상 aggregate의 현재 revision을 요구한다. Session 생성은 `expectedProjectRevision`, 기존 Session start/steer/interrupt/fork는 `expectedSessionRevision`, Task·Plan·Worktree·Queue·Device·NotificationPolicy·Approval·Attention mutation은 각각 대응하는 `expected...Revision`을 검증한다. machine `sequence`는 cursor이며 concurrency token으로 사용할 수 없다.
+모든 mutation은 `Idempotency-Key`와 대상 aggregate의 현재 revision을 요구한다. Session 생성은 `expectedProjectRevision`, 기존 Session start/steer/interrupt/fork는 `expectedSessionRevision`, Task·Plan·Worktree·Queue·Checkpoint·Device·NotificationPolicy·Approval·Attention mutation은 각각 대응하는 `expected...Revision`을 검증한다. TaskAttempt, Dispatch, ExecutionLease, ResourceLease와 RunBudget usage는 daemon 내부 operation만 바꾸며 current attempt/dispatch pair와 source operation/sample id로 멱등 처리한다. machine `sequence`는 cursor이며 concurrency token으로 사용할 수 없다.
 
 ### 6.3 Plan과 Task
 
@@ -783,9 +1265,10 @@ P0 쓰기는 로컬·원격 모두 반드시 `worktree="managed"`다. 독립 Ses
 | POST | `/plans` | 목표와 제약으로 `draft` 생성 |
 | GET | `/plans/{planId}` | DAG와 상태 조회 |
 | GET | `/tasks` | `planId`, `state`, `projectId`, cursor 필터 |
+| GET | `/dispatches` | `taskAttemptId`, `state`, cursor 필터; mutation은 daemon 내부 전용 |
 | POST | `/plans/{planId}/propose` | 분해기가 task/edge/artifact 초안을 제안 |
-| PATCH | `/plans/{planId}` | `draft`, `proposed`, `editing`에서 task/edge 수정 |
-| POST | `/plans/{planId}/validate` | cycle, policy, lane, artifact 계약 검사 |
+| PATCH | `/plans/{planId}` | `draft`, `proposed`, `editing`, `blocked`에서 task/edge/profile/budget 수정 |
+| POST | `/plans/{planId}/validate` | cycle, policy, budget, resource, checkpoint, artifact 계약 검사 |
 | POST | `/plans/{planId}/freeze` | 검증된 정확한 revision을 불변 실행 후보로 고정 |
 | POST | `/plans/{planId}/confirm` | frozen revision을 확인하고 실행 허용 |
 | POST | `/plans/{planId}/cancel` | 미시작 task 취소, 실행 중 task는 정책대로 interrupt |
@@ -795,6 +1278,11 @@ P0 쓰기는 로컬·원격 모두 반드시 `worktree="managed"`다. 독립 Ses
 | POST | `/worktrees/{worktreeId}/integrate` | 타입이 있는 통합 요청, 명시적 확인 |
 | POST | `/worktrees/{worktreeId}/cleanup` | 변경 상태 검사 후 정리 |
 | GET | `/worktrees` | `projectId`, `ownerType`, `state`, cursor 필터 |
+| GET | `/resource-claims` | `planId`, `taskId`, `kind`, cursor 필터 |
+| GET | `/resource-leases` | active/expired resource lease 조회; mutation은 daemon 내부 전용 |
+| GET | `/run-budgets/{budgetId}` | limit, usage, metering capability, exhaustion 조회 |
+| GET | `/checkpoints` | `planId`, `taskId`, `state`, cursor 필터 |
+| POST | `/checkpoints/{checkpointId}/responses` | durable gate에 typed 결정 제출 |
 
 ```ts
 interface CreatePlanCommand {
@@ -804,11 +1292,34 @@ interface CreatePlanCommand {
   baseGitRevision: string | null;
   constraints: string[];
   maxParallelTasks: number;
+  checkpointSpecs: CheckpointSpec[];
+  runBudget: RunBudgetLimits;
 }
+
+type EditableTaskFields = Pick<
+  Task,
+  | "id"
+  | "title"
+  | "instruction"
+  | "mode"
+  | "expectedScope"
+  | "risk"
+  | "executionProfileId"
+  | "checkpointSpecs"
+  | "dependsOn"
+  | "lane"
+  | "resourceClaimIds"
+  | "expectedArtifacts"
+  | "consumedArtifacts"
+  | "completionCriteria"
+> & { verification: VerificationSpecInput[] };
 
 interface EditPlanCommand {
   expectedPlanRevision: number;
-  tasks: Array<Pick<Task, "id" | "title" | "instruction" | "mode" | "expectedScope" | "risk" | "humanCheckpoints" | "dependsOn" | "lane" | "expectedArtifacts" | "consumedArtifacts" | "completionCriteria" | "verification">>;
+  checkpointSpecs: CheckpointSpec[];
+  tasks: EditableTaskFields[];
+  resourceClaims: ResourceClaimInput[];
+  runBudget: RunBudgetLimits;
 }
 
 interface ProposePlanCommand { expectedPlanRevision: number }
@@ -840,7 +1351,20 @@ interface IntegrateWorktreeCommand {
   expectedProjectRevision: number;
   action: "cherry_pick" | "merge" | "patch_export";
   targetRef: string;
+  expectedTaskAttemptId: string;
+  expectedDispatchId: string;
+  expectedSourceTreeOid: string;
+  expectedSourceCommitOid: string | null;
+  expectedTargetOid: string;
+  verificationResultIds: string[];
+  inspectionDigest: string;
   confirmationReceipt: string;
+}
+
+interface RespondCheckpointCommand {
+  expectedCheckpointRevision: number;
+  decision: "continue" | "decline" | "cancel";
+  confirmationReceipt?: string;
 }
 
 interface CleanupWorktreeCommand {
@@ -850,32 +1374,38 @@ interface CleanupWorktreeCommand {
 }
 ```
 
-Plan 상태는 `draft → proposed ↔ editing → validated → frozen → confirmed → running → succeeded|failed|blocked|cancelled`다. canonical Plan document는 exact `baseGitRevision`, 모든 Task의 read/write scope, risk, 사람 checkpoint, produced/consumed artifact ref, completion criteria, verification spec을 포함한다. `validate`는 DAG cycle, dependency 존재, artifact producer/consumer, write task managed worktree, lane/동시성 정책을 검사한다. 독립 Task의 write scope가 겹치면 dependency/lane 없이는 실패하고, consumed artifact의 producer가 dependency ancestor가 아니거나 spec id가 없으면 실패한다. 수정하면 validation/freeze가 무효화된다. `freeze`는 이 전체 document hash와 base revision을 저장하고 이후 수정은 새 revision으로 되돌린다. `confirm` 요청에는 `expectedPlanRevision`, `frozenHash`, 전체 task id가 필요하며 다르면 실행하지 않는다.
+Plan 상태는 `draft → proposed ↔ editing → validated → frozen → confirmed → running → succeeded|failed|blocked|cancelled`이며 안전한 재계획은 `blocked → editing → validated → frozen → confirmed`를 사용한다. canonical Plan document는 exact `baseGitRevision`, RunBudget, Plan/Task typed checkpoint spec, 모든 Task의 read/write scope, execution profile, ResourceClaim, produced/consumed artifact와 materialization 전략, completion criteria, verification spec을 포함한다. `validate`는 DAG cycle/depth/task 수, dependency 존재, budget ceiling와 metering capability, resource acquisition order, checkpoint schema와 trigger owner, artifact producer/consumer, write task managed worktree, lane/동시성 정책을 검사한다. Plan에는 plan-level trigger만, Task에는 task-level trigger만 선언할 수 있다. 독립 Task의 write scope가 겹치면 dependency/resource serialization 없이는 실패하고, consumed artifact의 producer가 dependency ancestor가 아니거나 spec id/OID/materialization order가 유효하지 않으면 실패한다. 수정하면 validation/freeze가 무효화되고 같은 transaction에 `plan.definition_changed`를 기록한다. `freeze`는 이 전체 document hash와 base revision을 저장하고 이후 수정은 새 revision으로 되돌린다. `confirm` 요청에는 `expectedPlanRevision`, `frozenHash`, 전체 task id가 필요하며 다르면 실행하지 않는다.
 
-Task 상태는 `queued → ready → dispatching → running → needs_input|succeeded|failed|cancelled`, 실패 dependency가 있으면 `blocked`다. confirmed plan에서만 `ready`가 가능하고, dependency가 모두 succeeded이며 lane lease와 동시성 slot을 확보해야 `dispatching`으로 간다. task lease와 operation을 먼저 저장한 뒤 session/worktree를 만든다.
+Task 상태는 `queued → ready → dispatching → running → needs_input|succeeded|failed|cancelled`, 실패 dependency, materialization 충돌, scope 위반, checkpoint 거절, resource 복구 불확실성, budget exhaustion이 있으면 `blocked`다. confirmed plan에서만 `ready`가 가능하고, dependency가 모두 succeeded이며 모든 typed checkpoint가 현재 단계까지 만족됐고 ResourceLease와 동시성 slot을 확보해야 `dispatching`으로 간다. task operation, 새 TaskAttempt/Dispatch, composite ExecutionLease와 ResourceLease를 먼저 한 transaction에 저장·commit한 뒤 worktree/materialization/ContextPackage/RunManifest/Session을 만든다.
 
 | 현재 | 명령/조건 | 다음 | Attempt 규칙 |
 |---|---|---|---|
 | `queued` | confirmed Plan, 모든 dependency succeeded | `ready` | 첫 attempt는 dispatch 시 생성 |
 | `queued`, `ready` | dependency 실패·정책/reconciliation 차단 | `blocked` | 기존 attempt가 있으면 보존 |
-| `ready` | 세 scope composite lease 예약 | `dispatching` | 첫 실행이면 새 attempt 생성, retry/unblock이면 이미 생성한 reserved attempt 사용 |
-| `dispatching` | worktree/Session/turn 연결 성공 | `running` | attempt `running`, source Session/Turn 기록 |
+| `ready` | budget admission + 세 scope/resource lease 예약 | `dispatching` | 새 attempt와 새 Dispatch를 만들고 current pair를 CAS로 설정 |
+| `dispatching` | journal commit 뒤 worktree 생성 및 dependency materialization | `dispatching` | attempt `materializing`, Dispatch `launching`; 충돌 시 Task/Plan `blocked` |
+| `dispatching` | ContextPackage/RunManifest/Session/turn 연결 성공 | `running` | attempt/Dispatch `running`/`active`, exact source tree OID와 source Session/Turn 기록 |
 | `running` | blocking Approval/질문 | `needs_input` | 같은 attempt 유지, 기본 active slot release |
 | `needs_input` | 모든 blocker resolved, resume composite lease 획득 | `running` | 같은 attempt 재개; nonblocking 질문은 이 전이를 만들지 않음 |
 | `running` | 실행 종료 후 required verification 시작 | `running` | attempt만 `verifying` |
-| `running` | 완료 조건과 모든 required verification 통과 | `succeeded` | result summary, changed files, sourceTurnId, artifact/result refs 확정 |
+| `running` | current attempt/dispatch의 완료 조건과 모든 required verification 통과 | `succeeded` | result summary, changed files, sourceTurnId, artifact/result refs 확정 |
+| `running` | scope 위반, budget exhaustion, 복구 불확실 | `blocked` | attempt 실패로 고정하고 worktree/manifest 보존; Plan 재동결·재확인 필요할 수 있음 |
 | `running` | 실행/검증 실패 | `failed` | 실패 attempt와 산출물 보존 |
 | `failed` | 유효한 retry + `expectedTaskRevision` | `ready` | **반드시 새 attempt**; 이전 Session/worktree/result 보존 |
 | `blocked` | 원인 해소 + 명시적 unblock + `expectedTaskRevision` | `ready` | **반드시 새 attempt**; dependency/policy를 재검증 |
 | 비-terminal | cancel | `cancelled` | active turn interrupt, worktree 자동 삭제 금지 |
 
-retry/unblock은 confirmed/frozen Plan revision이 그대로이고 dependency, scope/lane, ProjectPolicy, queue capability가 다시 유효할 때만 허용한다. `needs_input → running`은 새 attempt를 만들지 않지만 pending 질문/승인이 전부 해결되고 세 scope lease를 다시 얻기 전에는 전이하지 않는다.
+retry/unblock은 confirmed/frozen Plan revision이 그대로이고 dependency, scope/resource claim, RunBudget, ProjectPolicy, queue capability가 다시 유효할 때만 허용한다. scope 위반처럼 frozen 계약을 바꿔야 하는 blocker는 단순 unblock할 수 없고 Plan을 편집·검증·동결·확인해야 한다. retry/unblock은 항상 새 Attempt와 새 Dispatch를 만들며, `needs_input → running`은 같은 Attempt/Dispatch pair를 유지하고 pending 질문/승인이 전부 해결되고 새 세 scope/resource lease를 얻기 전에는 전이하지 않는다. Dispatch의 current lease IDs는 release/reacquire transaction과 같은 revision에서 바꾼다. 정상 상태는 `reserved → launching → active → completed|failed|cancelled`다. `launching|active → outcome_unknown`은 upstream 결과가 모호할 때만 허용하고, 이후 같은 operation과 Attempt/Dispatch pair에 대한 authoritative reconciliation으로만 `active|completed|failed|cancelled`에 갈 수 있다. 그 전에는 terminal 결과를 추정하지 않는다.
 
-artifact는 `id`, `producerTaskAttemptId`, `kind`, `contentHash`, `worktreeCommitOrBlobRef`, `redactedHandoffSummary`, `createdAt`을 가진다. 후속 task에는 DAG에 선언된 artifact와 handoff summary만 전달하며 원 대화나 secret answer를 자동 전달하지 않는다.
+Artifact는 frozen spec ID, producer Attempt/Dispatch pair, kind, content hash, typed commit/tree OID, immutable `reference`, redacted handoff summary를 가진다. `kind="commit"`이면 `commitOid`와 그 commit의 `treeOid`가 모두 필수이고 다른 kind에서 해당 OID가 의미 없으면 `null`이어야 한다. 현재 pair와 일치하지 않는 producer 결과는 Artifact collection에 채택하지 않는다. 후속 Task에는 DAG에 선언된 ArtifactConsumption과 ContextPackage만 전달하며 원 대화나 secret answer를 자동 전달하지 않는다.
 
-`VerificationSpec.templateId`는 ProjectPolicy의 allowlisted template만 가리킨다. daemon이 고정 executable과 schema 검증된 argv를 조합하며 remote가 raw shell, executable path, command string을 공급할 수 없다. 각 attempt는 모든 required verification의 `exitCode`, `durationMs`, `passed`, redacted output artifact를 기록하고 완료 조건을 만족하기 전에는 Task를 `succeeded`로 만들지 않는다.
+Codex turn이 끝나면 daemon은 isolated Git index/snapshot으로 untracked를 포함한 actual changed-file manifest와 exact result tree OID를 계산한다. 모든 변경은 frozen `expectedScope.writePatterns` 안이어야 하고, `CompletionCriteria.changedPathPatterns`가 있으면 그 범위도 동시에 만족해야 한다. 하나라도 벗어나면 Task와 Plan을 `blocked`로 만들고 `task_blocked` Attention을 생성하며, 기존 worktree를 보존한다. 에이전트가 scope를 자동 확장하거나 같은 Attempt를 계속 실행할 수 없고 사용자가 새 Plan revision에서 범위를 편집해 다시 freeze/confirm해야 한다.
 
-managed worktree 명령은 DB에 예약한 canonical path와 Git common-dir identity의 정확한 일치를 요구한다. integrate는 target ref와 inspection digest를 보여 준 잠금 해제 UI receipt가 필수이고, 기본 브랜치 자동 merge/push는 금지한다. cleanup은 pristine 여부와 무관하게 잠금 해제 UI receipt가 필수이며 dirty, untracked, ignored 또는 아직 통합되지 않은 commit의 목록 digest를 receipt에 묶는다.
+Task 편집 명령의 verification은 `state="draft"`와 `VerificationSpecInput[]`으로 저장한다. validation은 각 `verificationTemplateId`를 잠금 해제된 local-admin UI가 ProjectPolicy에 사전 등록한 allowlisted template에 대조하고 exact version/digest를 채운 `state="resolved"` branch로 원자 교체한다. resolved branch는 `resolvedAgainstProjectPolicyRevision`을 보존하며 freeze 직전 ProjectPolicy revision이 달라졌으면 다시 validation해야 한다. frozen Plan과 dispatch는 resolved branch만 허용한다. Planner와 remote client는 template ID와 schema가 허용한 typed args만 제안할 수 있다.
+
+daemon은 resolved spec의 exact version/digest, shell/command interpreter가 아닌 고정 executable ID, literal/typed slot으로만 이루어진 argv template을 검증하고 argv 배열을 shell 보간 없이 조합한다. command-text/eval slot과 raw argv fragment는 template 등록 단계에서도 금지한다. template이 고정한 cwd와 `inherit=false` clean environment에는 allowlisted variable와 로컬 관리자가 template에 고정한 secret reference만 주입하며 caller가 환경 변수 이름·값이나 secret reference를 선택할 수 없다. executable path, command string, shell/interpreter fragment, raw argv fragment, 임의 cwd/env를 입력으로 받거나 typed Approval로 우회하지 않는다. active turn과 writer를 정지한 뒤 current Attempt/Dispatch pair의 exact `sourceTreeOid`에서 검증하고 각 result에 같은 pair, OID, template version/digest, `exitCode`, `durationMs`, `passed`, redacted output artifact를 기록한다. 검증 도중이나 이후 tree OID가 바뀌거나 current pair가 달라지면 모든 이전 결과를 무효화한다. required verification과 완료 조건을 만족하기 전에는 Task를 `succeeded`로 만들지 않는다.
+
+managed worktree 명령은 DB에 예약한 canonical path와 Git common-dir identity의 정확한 일치를 요구한다. integrate 직전에 Worktree owner의 expected TaskAttempt/Dispatch pair, source tree/commit OID, target ref의 현재 OID, required verification이 결박된 pair/tree OID, inspection digest를 다시 계산해 명령 필드와 UI receipt 모두에 일치시킨다. 하나라도 달라지면 `SOURCE_CHANGED`/`TARGET_CHANGED`로 아무 Git mutation 없이 거절한다. 기본 브랜치 자동 merge/push는 금지한다. cleanup은 pristine 여부와 무관하게 잠금 해제 UI receipt가 필수이며 dirty, untracked, ignored 또는 아직 통합되지 않은 commit의 목록 digest를 receipt에 묶는다.
 
 ### 6.4 Durable queue API
 
@@ -899,6 +1429,82 @@ interface ResumeQueueCommand {
 ```
 
 rate/usage-limit pause는 adapter 오류 분류가 같은 transaction에서 `queue.state_changed(to=paused)`를 기록한다. `resumeAfter` 전 자동 resume는 금지하며, manual resume도 현재 runtime capability/limit을 재검사한다. lease 발급·갱신·회수는 daemon 내부 명령으로만 수행하고 원격 API에 노출하지 않는다.
+
+### 6.5 P1 Usage Window Runner API
+
+| Method | Path | 설명 |
+|---|---|---|
+| GET | `/provider-usage/rate-limits` | provider adapter가 정규화한 redacted bucket snapshot/source/freshness 조회 |
+| GET | `/usage-window-presets` | local-admin이 저장한 preset 조회 |
+| POST | `/usage-window-presets` | 잠금 해제된 local-admin UI에서 preset 생성 |
+| PATCH | `/usage-window-presets/{presetId}` | expected revision과 local confirmation으로 preset 수정/retire |
+| POST | `/usage-window-presets/{presetId}/preview` | 현재 snapshot/revision으로 candidate·forecast·cost-risk digest 계산; 상태 mutation 없음 |
+| GET | `/usage-window-runs` | preset/queue/state/cursor로 run 조회 |
+| POST | `/usage-window-runs` | fresh snapshot/preview와 user presence에 결박된 단일 start action |
+| POST | `/usage-window-runs/{runId}/cancel` | 새 launch 중단; active Attempt는 기존 cancel 정책과 분리 |
+
+```ts
+interface CreateUsageWindowPresetCommand {
+  expectedProjectRevision: number;
+  preset: Omit<UsageWindowPreset, "id" | "digest" | "eligibleSetDigest" | "state" | "revision">;
+  confirmationReceipt: string;
+}
+
+interface UpdateUsageWindowPresetCommand {
+  expectedProjectRevision: number;
+  expectedPresetRevision: number;
+  preset: Omit<UsageWindowPreset, "id" | "projectId" | "digest" | "eligibleSetDigest" | "revision">;
+  confirmationReceipt: string;
+}
+
+interface StartUsageWindowRunCommand {
+  expectedPresetRevision: number;
+  expectedPresetDigest: string;
+  expectedRevisionBindings: UsageWindowRevisionBindings;
+  eligibleSetDigest: string;
+  rateLimitSnapshotId: string;
+  rateLimitSnapshotDigest: string;
+  previewId: string;
+  previewDigest: string;
+  userPresenceReceipt: string;
+}
+
+interface UsageWindowStartPresenceReceiptClaims {
+  actorDeviceId: string;
+  actorDeviceKind: "local_controller" | "paired_remote";
+  actorChannelBindingDigest: string;
+  interaction: "foreground_explicit_action";
+  presetId: string;
+  presetRevision: number;
+  presetDigest: string;
+  projectPolicyDigest: string;
+  eligibleSetDigest: string;
+  expectedBindingsDigest: string;
+  rateLimitSnapshotId: string;
+  rateLimitSnapshotDigest: string;
+  previewId: string;
+  previewDigest: string;
+  expiresAt: string;
+  nonce: string;
+}
+
+interface PreviewUsageWindowRunCommand {
+  expectedPresetRevision: number;
+  expectedRevisionBindings: UsageWindowRevisionBindings;
+  eligibleSetDigest: string;
+  rateLimitSnapshotId: string;
+  rateLimitSnapshotDigest: string;
+}
+
+interface CancelUsageWindowRunCommand {
+  expectedUsageWindowRunRevision: number;
+  reason: "user_cancelled";
+}
+```
+
+create/update/start/cancel은 모두 `Idempotency-Key`를 요구한다. preview는 상태를 바꾸지 않지만 짧게 만료되는 `previewId`와 server-authenticated digest를 반환한다. preset create/update/retire와 queue/eligible set 구성은 잠금 해제된 인증 local-admin UI만 호출할 수 있다. run start는 active install-bound `local_controller`의 local-admin UI 또는 revoke되지 않은 `paired_remote` Device 중 명시적 `usage_window.start` capability가 있는 actor의 잠금 해제·인증 UI에서 허용한다. 두 경로 모두 `userPresenceReceipt`를 요구하며, 이는 7.6의 confirmation challenge를 `action="usage_window.start"`, preset target revision, preview impact digest로 foreground explicit action에서 완료해 받은 opaque one-time receipt다. 그 서명 claims는 daemon이 인증 transport에서 정한 actor Device ID/kind와 channel binding digest, interaction kind, preset revision/digest, ProjectPolicy digest, eligible-set digest, 전체 expected Project/Queue/Plan/Task/QueueEntry binding digest, snapshot/preview ID와 digest, 짧은 expiry와 nonce를 포함한다. start 시 인증 channel actor/kind/binding, Device active state, local-admin channel 또는 remote action capability, expiry와 nonce를 다시 검사한다. local loopback token·CLI도 receipt를 대체할 수 없고 `local_controller`를 relay actor로 사용할 수 없다. voice, notification quick action, Planner에는 challenge 완료나 start capability를 주지 않는다. 원격 start body는 preset/queue/task/scope mutation을 받지 않고 저장된 preset과 preview에서 유도한 exact `expectedRevisionBindings`와 QueueEntry membership만 대조한다. start transaction은 preset revision/digest, immutable effective policy, Project/Queue/Plan/Task/QueueEntry revision, policy/definition/frozen hash, eligible-set digest, fresh snapshot ID/digest와 preview ID/digest를 다시 검증해 start/current binding, actor kind/device/channel과 receipt digest를 UsageWindowRun에 영속하고 `started` event를 commit한다. 이 commit만으로 Task를 실행하지 않으며 각 admission은 ORC-002의 새 Attempt/Dispatch/lease/budget transaction을 별도로 통과한다.
+
+forecast 재계산은 `UsageForecastSource`의 `(usageWindowRunId, sourceEventId)` unique key로 멱등 처리한다. Task admission row는 `(usageWindowRunId, taskId)`와 `(usageWindowRunId, queueEntryId)`를 각각 unique로 두고 채택한 `dispatchId`를 기록해 같은 run의 duplicate를 막는다. Attempt의 reserved/running/succeeded/failed/cancelled lifecycle event와 rate-limit observation은 서로 다른 stable `sourceEventId`를 가져야 하며 같은 event replay는 forecast revision을 다시 올리지 않는다. current failed event는 `consecutiveFailureCount`를 1 올리고 succeeded event는 0으로 되돌리며 stale pair event는 어느 쪽도 바꾸지 않는다. 각 admission 직전 `currentRevisionBindings`의 Project/Queue/Plan/Task/QueueEntry revision과 sealed membership을 CAS하고, provider observation이 stale/unknown이거나 `redactedAccountId`, bucket set, `windowDurationMins`/`resetsAt` identity가 start snapshot과 달라지면 새 launch를 중단한다. 한 candidate pass의 검사 순서와 entry별 admitted/skipped reason을 forecast revision에 결박해 journal에 남긴다. queue와 slot은 남았지만 safe candidate가 없고 bounded lifecycle event를 기다릴 active governed Attempt/Dispatch도 없으면 같은 transaction에서 `no_safe_candidate` terminal stop을 commit한다. terminal stop transaction은 state/reason/final summary를 먼저 commit하고 immutable policy의 `controlQueueId`를 target으로 한 `usage_window_run_stopped` Attention을 만든다. credit/reset 소비, 결제/overage, account switch endpoint는 이 API에 존재하지 않는다.
 
 ## 7. 타입이 있는 승인 API
 
@@ -1064,7 +1670,7 @@ POST /confirmation-challenges
 POST /confirmation-challenges/{challengeId}/complete
 ```
 
-challenge 생성 body는 `{ target: { type, id, revision }, action, impactDigest }`다. Approval이면 여전히 pending인지도 검사한다. 현재 device가 잠금 해제된 explicit UI interaction을 증명할 때만 생성한다. challenge는 target id/revision, `deviceId`, action, amendment 또는 inspection digest, risk ids에 바인딩되고 60초 이내 만료된다. 완료 endpoint는 1회성 opaque `confirmationReceipt`를 반환하며 typed mutation은 이 receipt를 제출한다. daemon은 receipt를 검증·소비한 뒤 재사용을 거절한다.
+challenge 생성 body는 `{ target: { type, id, revision }, action, impactDigest }`다. Approval이면 여전히 pending인지도 검사한다. 현재 Device가 잠금 해제된 foreground explicit UI interaction을 증명할 때만 생성한다. daemon은 인증 transport에서 actor Device ID/kind와 channel binding을 결정하며 request body의 actor 자기 주장을 받지 않는다. challenge는 target id/revision, actor Device ID/kind, channel binding digest, `interaction="foreground_explicit_action"`, action, amendment 또는 inspection digest, risk ids에 바인딩되고 60초 이내 만료된다. 완료 endpoint는 이 claims와 nonce를 서명한 1회성 opaque `confirmationReceipt`를 반환하며 typed mutation은 이 receipt를 제출한다. daemon은 mutation channel의 actor/binding을 다시 대조하고 receipt를 원자적으로 소비한 뒤 재사용을 거절한다. install-bound `local_controller`도 이 절차를 생략하지 않으며 `paired_remote`만 relay에서 허용된다.
 
 `Approval`에는 `explicitConfirmationRequired`만 저장하고 challenge/receipt secret을 넣지 않는다. 음성, background action, push action은 approval accept challenge를 생성/완료할 수 없다. 음성은 해당 UI로 이동시키거나 `decline`/`cancel`만 수행할 수 있다.
 
@@ -1128,16 +1734,19 @@ secret input/form answer가 있는 명령은 값이나 값의 hash를 저장하�
 
 ### 9.2 Optimistic concurrency
 
-모든 mutable aggregate mutation은 해당 `expected...Revision`을 MUST 포함한다. Project, Session, Plan, Task, TaskAttempt(내부), Worktree, Queue, Device, NotificationPolicy, Approval, Attention이 대상이며 현재 revision과 다르면 409를 반환한다. 새 Session/Plan처럼 Project 정책을 소비해 생성하는 명령은 `expectedProjectRevision`을 검증한다. `steer`와 `interrupt`는 `expectedTurnId`도 검증한다. daemon 전역 event sequence는 이 검사를 대체할 수 없다.
+모든 mutable aggregate mutation은 해당 `expected...Revision`을 MUST 포함한다. Project, Session, Plan, Task, TaskAttempt(내부), Dispatch(내부), Worktree, Queue, ExecutionLease(내부), ResourceClaim(Plan 편집 내부), ResourceLease(내부), RunBudget(내부), UsageWindowPreset(P1), UsageWindowRun(P1), Checkpoint, Device, NotificationPolicy, Approval, Attention이 대상이며 현재 revision과 다르면 409를 반환한다. 새 Session/Plan/UsageWindowPreset처럼 Project 정책을 소비해 생성하는 명령은 `expectedProjectRevision`을 검증한다. UsageWindowRun 시작은 preset/Project/Queue/Plan/Task revision과 snapshot/preview digest를 함께 검증한다. `steer`와 `interrupt`는 `expectedTurnId`도 검증한다. ContextPackage와 RunManifest는 revision 1 이후 mutation이 없다. daemon 전역 event sequence는 이 검사를 대체할 수 없다.
 
 ### 9.3 재시도 분류
 
 - GET, cursor replay: 자동 재시도 가능
 - idempotency key가 있는 명령: 네트워크 오류 시 같은 key로 재시도 가능
 - approval response: 같은 key로만 재시도, expired이면 중단
-- runtime `turn/start`: upstream 수락 여부가 불명확하면 먼저 thread 상태 reconcile
-- runtime `thread/start`: 결과가 불명확하면 orphan/reconcile하고 blind retry 금지
+- checkpoint response: 같은 key로만 재시도, satisfied/declined/expired이면 새 결정 금지
+- runtime `turn/start`: acquisition window에서 upstream 수락 여부가 불명확하면 current Dispatch를 `outcome_unknown`으로 두고 먼저 thread 상태 reconcile
+- runtime `thread/start|resume|fork`: acquisition window 결과가 불명확하면 orphan/reconcile하고 blind retry 금지
 - worktree integrate/cleanup: 자동 재시도 금지, 실제 Git 상태 확인 후 사용자에게 결과 제시
+- resource acquire: scheduler 내부 deterministic key로만 재시도하며 부분 claim 보유 금지
+- budget debit: 같은 source usage sample id를 한 번만 반영하고 감소·추정 보정으로 cap을 우회하지 않음
 
 ## 10. 음성 명령 계약
 
@@ -1243,17 +1852,55 @@ parse 결과:
 - 세션이 `needs_input`이면 해당 approval id의 typed answer/decision만 blocker로 전달한다. 일반 follow-up은 명시적 `queued_after_blocker`로 저장하거나 409로 거절하며 blocker를 해제하지 않는다.
 - 음성은 typed 사용자 질문 답변과 approval의 `decline`/`cancel`만 제출할 수 있다. 위험도와 무관하게 모든 approval `accept`는 잠금 해제된 UI로 이동시키며 음성으로 confirmation challenge/receipt를 생성하거나 완료하지 않는다. interrupt 같은 별도 제어 mutation은 대상/revision 확인 뒤 허용한다.
 - 음성 endpoint는 raw shell, 임의 path, 임의 HTTP URL 실행 intent를 정의하지 않는다.
+- P1 UsageWindowRun은 음성 intent나 notification quick action으로 시작할 수 없다. 음성은 저장된 preset의 잠금 해제 preview UI로 이동하도록 제안할 수만 있다.
+
+### 10.1 사용자 표현 불변식
+
+클라이언트 종류나 사용자 숙련도와 관계없이 같은 canonical state와 mutation 계약을 사용한다. 기본 표현은 쉬운 말로 현재 상태, 영향을 받는 대상, 다음 안전 행동을 먼저 보여 주고 event ID, revision, digest, adapter payload와 진단 원문은 사용자가 펼치는 기술 상세에 둔다. 상태·위험·성공은 색상 하나로 전달하지 않고 text와 icon을 함께 제공하며 핵심 interactive target은 최소 44×44 CSS px, keyboard focus와 screen-reader label을 가져야 한다.
+
+Task/Session 진행은 canonical lifecycle stage와 검증된 activity/evidence로만 표현한다. runtime이 제공하지 않은 완료 퍼센트를 합성하거나 provider `usedPercent`를 Task 완료율, 정확한 token 잔량 또는 100% 소진 약속으로 바꾸지 않는다. 모든 음성 mutation 확인 화면·되읽기는 전사문, 해석한 action과 정확한 대상 Project/Session/Approval을 함께 제시하며 ambiguous 또는 low-confidence 결과에는 confirm mutation을 제공하지 않는다.
 
 ## 11. 알림 계약
 
 알림의 원천은 session 상태 자체가 아니라 durable `attention`이다.
 
 ```ts
-type AttentionKind = "needs_input" | "completed" | "failed" | "reconciliation_required";
+type AttentionTarget =
+  | { type: "session"; id: string }
+  | { type: "plan"; id: string }
+  | { type: "task"; id: string }
+  | { type: "queue"; id: string }
+  | { type: "worktree"; id: string };
+
+type AttentionKind =
+  | "needs_input"
+  | "completed"
+  | "failed"
+  | "reconciliation_required"
+  | "task_blocked"
+  | "plan_blocked"
+  | "checkpoint_required"
+  | "integration_required"
+  | "budget_exhausted"
+  | "usage_window_run_stopped"
+  | "queue_paused"
+  | "resource_wait_timeout"
+  | "stalled";
+
+type AttentionSource =
+  | { type: "approval"; id: string }
+  | { type: "turn"; id: string }
+  | { type: "checkpoint"; id: string }
+  | { type: "run_budget"; id: string }
+  | { type: "usage_window_run"; id: string }
+  | { type: "resource_lease"; id: string }
+  | { type: "verification"; id: string }
+  | { type: "system"; id: string };
 
 interface Attention {
   id: string;
-  sessionId: string;
+  target: AttentionTarget;
+  source: AttentionSource;
   kind: AttentionKind;
   blocking: boolean;
   state: "open" | "acknowledged" | "resolved";
@@ -1285,10 +1932,12 @@ interface NotificationPolicy {
 
 interface Device {
   id: string;
+  kind: "local_controller" | "paired_remote";
   name: string;
   state: "active" | "offline" | "revoked";
   scopes: Array<"view" | "send_input" | "respond_safe" | "respond_elevated" | "control">;
   capabilities: string[];
+  actionCapabilities: Array<"usage_window.start">;
   keyId: string;
   lastSeenAt: string | null;
   revision: number;
@@ -1312,19 +1961,26 @@ interface UpdateNotificationPolicyCommand {
 }
 ```
 
-blocking과 nonblocking 입력 요청 모두 `kind="needs_input"` Attention을 만들되 `blocking`으로 구분한다. `blocking=false`는 Session 상태를 `needs_input`으로 바꾸지 않으며 알림 정책이 별도로 억제할 수 있다.
+daemon은 최초 설치 때 OS 사용자와 설치 key에 결박된 `kind="local_controller"` Device를 등록한다. 이는 paired remote 기기가 아니며 relay credential로 사용할 수 없다. local-admin mutation의 actor는 인증된 Unix socket 또는 loopback token+Origin/CSRF channel에서 daemon이 이 Device로 결정하고 caller가 보낸 device ID로 바꾸지 않는다. `kind="paired_remote"`만 DEV-001 페어링·revoke 수명 주기를 사용한다.
+
+`Device.capabilities`는 기기가 보고한 hardware/runtime capability이고 권한 부여가 아니다. `usage_window.start`는 server-side로 `paired_remote`에 부여하는 P1 `actionCapabilities` 값이다. 일반 `control` 또는 `send_input` scope나 self-reported capability에서 파생되지 않으며 preset 편집, eligible Task/Queue 변경, Approval/Checkpoint accept, credit/reset/결제 권한을 포함하지 않는다. start endpoint는 local·remote 모두 인증 channel의 actor와 user-presence receipt의 Device ID/kind/channel binding이 같고 Device가 active이며 receipt nonce가 미사용일 때만 허용한다. `paired_remote`는 capability가 현재도 grant되어야 하고 `local_controller`는 local-admin channel과 foreground receipt를 모두 만족해야 한다. 어느 쪽도 raw loopback/CLI 호출로 receipt 검증을 생략할 수 없다.
+
+blocking과 nonblocking 입력 요청 모두 Session target의 `kind="needs_input"` Attention을 만들되 `blocking`으로 구분한다. `blocking=false`는 Session 상태를 `needs_input`으로 바꾸지 않으며 알림 정책이 별도로 억제할 수 있다. pre-dispatch Plan 검증/예산 문제는 Plan target, 실행 scope·resource·stall 문제는 Task target, integration 충돌은 Worktree target, provider/rate-limit pause와 P1 UsageWindowRun stop summary는 Queue target을 사용한다. source가 Checkpoint/RunBudget/ResourceLease/UsageWindowRun처럼 별도 aggregate이면 typed `source`로 연결하고 Session이 없다는 이유로 알림을 누락하지 않는다.
+
+허용 target의 예는 다음과 같다. `completed`, Session `failed`, `needs_input`, runtime `reconciliation_required`는 Session을 대상으로 한다. `task_blocked`, `resource_wait_timeout`, `stalled`는 Task, `plan_blocked`와 `budget_exhausted`는 Plan, `queue_paused`와 `usage_window_run_stopped`는 Queue, `integration_required`는 Worktree를 대상으로 한다. `checkpoint_required`는 spec owner에 따라 Plan 또는 Task를 대상으로 한다. 이 조합 밖은 schema validation 오류다.
 
 endpoint:
 
 | Method | Path | 설명 |
 |---|---|---|
-| GET | `/attentions` | `state`, `kind`, `sessionId`, cursor로 inbox 조회 |
+| GET | `/attentions` | `state`, `kind`, `targetType`, `targetId`, `projectId`, cursor로 inbox 조회 |
 | GET | `/devices` | scope/capability/state를 redaction해 조회 |
 | GET | `/notification-deliveries` | `deviceId`, `attentionId`, `state`, cursor 필터 |
 | POST | `/attentions/{id}/acknowledge` | `AcknowledgeAttentionCommand`; 실행 상태에는 영향 없음 |
 | POST | `/devices/{id}/push-subscriptions` | `CreatePushSubscriptionCommand` |
 | DELETE | `/devices/{id}/push-subscriptions/{subscriptionId}` | `DeletePushSubscriptionCommand` |
 | PUT | `/devices/{id}/notification-policy` | quiet hours, kind, sound, privacy 설정 |
+| PUT | `/devices/{id}/action-capabilities` | local-admin UI에서 P1 action capability grant/revoke |
 
 ```ts
 interface AcknowledgeAttentionCommand {
@@ -1342,6 +1998,12 @@ interface DeletePushSubscriptionCommand {
   expectedDeviceRevision: number;
 }
 
+interface UpdateDeviceActionCapabilitiesCommand {
+  expectedDeviceRevision: number;
+  actionCapabilities: Array<"usage_window.start">;
+  confirmationReceipt: string;
+}
+
 interface RevokeDeviceCommand {
   expectedDeviceRevision: number;
   reason: string;
@@ -1349,9 +2011,9 @@ interface RevokeDeviceCommand {
 }
 ```
 
-세 명령 모두 `Idempotency-Key`가 필수다. create/delete는 path의 device/subscription 소유권과 `expectedDeviceRevision`을 검사한다. revoke는 잠금 해제된 로컬 UI receipt에 device id/revision/key fingerprint를 묶고 모든 subscription과 relay capability를 원자적으로 폐기한다. provider token과 Web Push auth material은 encrypted secret store에만 저장하고 event/snapshot에는 포함하지 않는다.
+모든 device mutation은 `Idempotency-Key`가 필수다. create/delete는 path의 device/subscription 소유권과 `expectedDeviceRevision`을 검사한다. action capability 변경은 잠금 해제된 local-admin UI만 허용하고 receipt에 device id/revision과 exact grant set을 묶는다. revoke는 잠금 해제된 로컬 UI receipt에 device id/revision/key fingerprint를 묶고 모든 subscription, relay credential과 action capability를 원자적으로 폐기한다. provider token과 Web Push auth material은 encrypted secret store에만 저장하고 event/snapshot에는 포함하지 않는다.
 
-`acknowledged`와 `resolved`는 다르다. 알림을 눌러도 승인 요청은 해결되지 않는다. approval이 해결되거나 새 turn으로 attention 의미가 사라질 때만 `resolved`가 된다.
+`acknowledged`와 `resolved`는 다르다. 알림을 눌러도 원인이 해결되지 않는다. Approval/Checkpoint가 terminal이 되거나, Queue가 재개되거나, replacement Plan이 재동결·재확인되거나, Worktree 충돌/Task blocker가 명시적으로 해소된 authoritative event가 있을 때만 연결 Attention을 `resolved`로 만든다. Session 완료 Attention은 새 turn이 시작돼 의미가 사라질 때, P1 `usage_window_run_stopped` summary는 같은 preset의 새 인증 Run이 시작될 때 해결할 수 있다.
 
 notification dedup key는 `deviceId + attentionId + policyRevision + stage`의 canonical encoding으로 계산한다. `stage`는 최초 전송 또는 escalation 단계다. 같은 key는 provider retry와 event replay에서도 한 delivery만 가진다. 상태는 `queued → provider_accepted → device_acknowledged → opened → acted` 또는 어느 단계에서든 `failed|expired`로 전이하며 이전 상태로 되돌리지 않는다.
 
@@ -1466,7 +2128,7 @@ ADR·외부 검토에 올릴 후보 프로파일은 X25519 key agreement, HKDF-S
 
 ### 14.4 Push wake-up
 
-relay는 mailbox에 새 ciphertext가 생기면 push provider에 짧게 만료되는 opaque 1회성 `wakeToken`만 보낸다. 모바일은 E2EE mailbox를 fetch해 로컬 복호화하기 전까지 알림 문구를 알 수 없다. push action에서 승인 accept를 수행하지 않는다.
+relay는 mailbox에 새 ciphertext가 생기면 push provider에 짧게 만료되는 opaque 1회성 `wakeToken`만 보낸다. 모바일은 E2EE mailbox를 fetch해 로컬 복호화하기 전까지 알림 문구를 알 수 없다. push action에서 승인 accept나 UsageWindowRun start를 수행하지 않는다.
 
 ## 15. 계약 테스트 요구사항
 
@@ -1483,8 +2145,21 @@ relay는 mailbox에 새 ciphertext가 생기면 push provider에 짧게 만료�
 11. secret user-input/form answer가 DB, event, log, push에 남지 않는지 검사한다.
 12. 두 개 이상의 blocking request에서 하나의 `serverRequest/resolved`가 다른 blocker를 지우지 않는지, nonblocking user input이 세션을 멈추지 않는지 검사한다.
 13. managed worktree의 canonical path/common-dir mismatch 거절과 dirty/untracked/ignored/unintegrated cleanup challenge를 검사한다.
-14. Plan edit가 validation/freeze를 무효화하고 cycle/artifact/lane invariants를 위반한 task가 dispatch되지 않는지 검사한다.
+14. Plan edit가 validation/freeze를 무효화하고 cycle/artifact/materialization/resource/budget/checkpoint invariants를 위반한 task가 dispatch되지 않는지 검사한다.
 15. `needs_input` 중 음성 일반 지시가 blocker를 해제하지 않고 어떤 approval accept challenge도 생성할 수 없는지 검사한다.
+16. Session이 없는 Plan/Task/Queue/Worktree Attention이 snapshot/replay/dedup 뒤 같은 target/source로 수렴하는지 검사한다.
+17. fan-in commit을 명시한 순서로 materialize하고 OID mismatch/충돌 시 부분 worktree를 보존한 채 Plan/Task를 block하는지 검사한다.
+18. shared/shared만 공존하고 exclusive가 배제되며, 전역 정렬·all-or-nothing 획득·TTL/restart reconcile로 deadlock과 중복 lease가 없는지 검사한다.
+19. 모든 RunBudget hard cap과 멱등 usage debit을 경계값에서 검사하고 unsupported token/cost cap이 validation을 통과하지 않는지 검사한다.
+20. stalled Attempt가 성공/실패로 추정되거나 소유 불명·공유 runtime PID를 종료하지 않는지 검사한다.
+21. Checkpoint 응답의 revision/idempotency/UI receipt를 검사하고 pending gate 뒤 단계가 실행되지 않는지 검사한다.
+22. actual changed-file scope 위반이 Task/Plan을 block하고 재동결·재확인 전 재개되지 않는지 검사한다.
+23. verification/source/target OID 중 하나라도 바뀌면 검증 결과 또는 integration receipt가 재사용되지 않는지 검사한다.
+24. stale TaskAttempt/Dispatch heartbeat·completion·Artifact·VerificationResult·lease release가 current Task 상태, 산출물, 자원 소유나 integration을 바꾸지 않는지 검사한다.
+25. upstream ID acquisition window에서 response보다 먼저 온 frame을 매핑 확정 뒤 수신 순서로 journal에 반영하고, frame/byte/time overflow 또는 timeout이면 `outcome_unknown`과 reconciliation Attention으로 수렴하는지 검사한다. journal commit 전 publish/worker start도 없어야 한다.
+26. P1 UsageWindowRun start는 인증 transport에서 결정한 active Device ID/kind/channel, foreground explicit action의 fresh one-time user-presence receipt, exact preset revision/digest와 immutable effective-policy snapshot, Project/Queue/Plan/Task/QueueEntry revision/identity, eligible-set/snapshot/preview digest를 모두 검사하고 Run에 보존한다. `local_controller`도 같은 receipt를 요구하고 local-admin channel에서만 허용하며, `paired_remote`는 현재 `usage_window.start` capability가 있어야 한다. control Queue가 선택 Queue에 없거나 여러 provider adapter를 섞은 preset, local loopback/CLI bypass, voice/push action, revoked device, receipt replay와 remote preset mutation은 거부한다.
+27. P1 UsageWindowRun은 governed Attempt의 각 lifecycle/rate-limit observation을 source event ID당 한 번 forecast하고 각 stop reason을 정해진 terminal state로 reduce한다. 첫 admission이 만든 revision은 current cursor와 같은 transaction에서 전진하고 다음 admission은 start revision이 아니라 current cursor를 CAS한다. 외부 source event replay는 `bindings_advanced`와 Run revision을 한 번만 올린다. policy/definition/frozen/membership identity 변경, stale/unknown/account-binding/window-change/reset-buffer/blocker/cost-risk에서는 새 launch가 없다. candidate pass는 Queue priority/order와 typed skip reason을 보존하고, queue와 slot이 남아도 safe candidate와 기다릴 active governed Attempt가 모두 없으면 `no_safe_candidate`로 한 번만 멈춘다. queue 고갈 시 filler/duplicate/eligible 밖 Task, credit/reset/account switch를 만들지 않는지 검사한다.
+28. VerificationTemplate registry와 실행 API는 shell/command interpreter, command-text/eval slot, raw argv fragment, caller cwd/env를 거부한다. draft input을 current ProjectPolicy revision의 exact template version/digest로 resolve하지 않았거나 그 뒤 정책 revision이 바뀐 Plan은 freeze/dispatch되지 않고, local-admin이 확인한 resolved typed template만 실행하는지 검사한다.
 
 ## 16. 구현 전 결정 사항
 

@@ -6,11 +6,11 @@
 >
 > 제품명: `Pawdex`는 가칭이며 변경 가능
 >
-> 범위 원칙: 이 문서는 기능과 운영 방식을 정의한다. UI, 캐릭터, 브랜드, 화면 레이아웃은 별도 디자인 입력을 받은 뒤 확정한다.
+> 범위 원칙: 이 문서는 기능과 운영 방식을 정의한다. 화면 동작과 정보 구조는 [Figma의 `Pawdex — Product UX` 페이지](https://www.figma.com/design/24X7ul4Vb9aTKZXpSY0OL3/pinpop?node-id=2290-2)를 승인된 구현 기준으로 사용하며, 시각 브랜드는 검증에 따라 발전할 수 있다.
 
 ## 1. 한 줄 정의
 
-Pawdex는 여러 Codex 작업을 안전하게 병렬 실행하고, 사람의 판단이 필요한 순간을 모바일과 Mac으로 알려 주며, 사용자가 음성으로 다음 지시를 이어갈 수 있게 하는 오픈소스·로컬 우선 개발 하네스다.
+Pawdex는 여러 Codex 작업을 안전하게 병렬 실행하고, 사람의 판단이 필요한 순간을 모바일과 Mac으로 알려 주며, 사용자가 음성으로 다음 지시를 이어갈 수 있게 하는 오픈소스·로컬 우선 작업 제어 도구이자 개발 하네스다.
 
 Pawdex의 핵심은 “Codex를 원격으로 보는 화면”이 아니라 다음 세 가지다.
 
@@ -20,7 +20,7 @@ Pawdex의 핵심은 “Codex를 원격으로 보는 화면”이 아니라 다�
 
 ## 2. 해결하려는 문제
 
-개발자가 AI에게 긴 작업을 맡긴 뒤에도 작업 상태를 확인하려고 책상과 터미널을 반복해서 오간다. 여러 세션을 동시에 돌리면 다음 문제가 더 커진다.
+사용자가 AI에게 긴 작업을 맡긴 뒤에도 작업 상태를 확인하려고 화면과 터미널을 반복해서 오간다. 여러 세션을 동시에 돌리면 기술 숙련도와 관계없이 다음 문제가 더 커진다.
 
 - 어떤 세션이 실행 중이고 어떤 세션이 질문이나 승인을 기다리는지 한눈에 알기 어렵다.
 - 작업 완료를 늦게 알아차려 다음 지시가 수십 분씩 지연된다.
@@ -33,6 +33,7 @@ Pawdex의 핵심은 “Codex를 원격으로 보는 화면”이 아니라 다�
 
 ### 3.1 1차 사용자
 
+- 코드를 직접 다루지 않더라도 문서, 조사, 콘텐츠, 운영 작업을 Codex에 맡기고 쉬운 언어로 진행 상황과 다음 행동을 확인하려는 사용자
 - 한 컴퓨터에서 2개 이상의 Codex 작업을 자주 병렬 실행하는 개인 개발자
 - 구현, 테스트, 문서화, 리팩터링을 AI에게 위임하고 중간 승인만 처리하려는 개발자
 - 소파나 침대, 다른 방에서도 긴 작업을 이어가고 싶은 개발자
@@ -45,6 +46,14 @@ Pawdex의 핵심은 “Codex를 원격으로 보는 화면”이 아니라 다�
 - CI, 이슈 트래커, 코드 리뷰를 작업 그래프에 연결하려는 플랫폼 엔지니어
 - Codex 이외의 에이전트 런타임도 같은 Attention 모델로 관리하려는 하네스 제작자
 
+### 3.3 공통 UX 요구
+
+- 첫 화면은 `무엇이 진행 중인지`, `무엇이 나를 기다리는지`, `다음에 무엇을 누르면 되는지`를 일상 언어로 보여 준다. 비개발자는 DAG, worktree, revision 같은 내부 개념을 몰라도 핵심 흐름을 완료할 수 있어야 한다.
+- 상세 로그, diff, OID, 사용량 snapshot freshness, 실행 정책은 개발자가 필요할 때 펼쳐 보는 progressive disclosure로 제공한다. 별도의 “초보/전문가 모드”를 요구하지 않는다.
+- 위험한 동작은 대상과 결과를 명확히 다시 보여 주고 인증된 UI action을 요구한다. 음성은 전사문·대상·의도를 확인한 뒤 전달하며 승인 수락을 대신하지 않는다.
+- 상태는 색, 아이콘, 텍스트를 함께 사용한다. 키보드 전용 조작, 가시적인 포커스, 스크린 리더 이름과 순서, 충분한 대비, 최소 44px 터치 목표, 자막·전사문, 소리·진동의 시각적 대체 신호를 제품 기준으로 삼는다.
+- 사용자가 선택한 reduced motion, 조용한 시간, 알림음 설정을 존중하고 고양이 표현은 중요한 상태를 가리거나 유일한 상태 신호가 되지 않는다.
+
 ## 4. 핵심 사용자 과업(JTBD)
 
 | ID | 사용자가 원하는 일 | 성공한 상태 |
@@ -55,6 +64,9 @@ Pawdex의 핵심은 “Codex를 원격으로 보는 화면”이 아니라 다�
 | JTBD-04 | 승인 때문에 멈춘 작업을 안전하게 처리하고 싶다 | 명령, 파일, 권한, 질문 유형별 정보와 선택지만 노출된다 |
 | JTBD-05 | 연결이 끊겨도 현재 상태를 믿고 싶다 | 재연결 후 누락 이벤트를 복구하고 중복 알림을 만들지 않는다 |
 | JTBD-06 | 내 워크플로에 Pawdex를 끼워 넣고 싶다 | 안정된 이벤트 계약과 CLI/API를 통해 확장할 수 있다 |
+| JTBD-07 | 같은 문제의 여러 해법을 공정하게 비교하고 싶다 | 동일한 기준과 예산으로 격리 실행한 후보의 diff·검증 결과를 보고 직접 선택한다 |
+| JTBD-08 | AI가 만든 diff에 정확한 수정 피드백을 주고 싶다 | 줄에 고정한 여러 코멘트를 하나의 구조화된 후속 지시로 전달하고 재검토한다 |
+| JTBD-09 | reset이 가까운 남은 사용량을 가치 있는 backlog에 쓰고 싶다 | 미리 고른 큐와 안전 상한을 한 번 확인해 실행하고, reset 전 목표 사용률 범위 또는 안전 중지 조건에서 멈춘다 |
 
 ## 5. 제품 포지셔닝
 
@@ -64,6 +76,8 @@ Codex는 자체적으로 Remote, Voice, Pets, Notifications 같은 사용자 기
 
 [Happy](https://github.com/slopus/happy)는 모바일·웹·데스크톱에서 코딩 에이전트 세션을 원격으로 이어가는 오픈소스 선례다. Pawdex는 원격 접속 경험 자체보다 Codex App Server 기반 상태 정확성, 안전한 병렬 작업 그래프, typed approval, 고양이 알림 규칙에 우선순위를 둔다.
 
+[Orca](https://github.com/stablyai/orca)는 여러 CLI 에이전트, worktree, 터미널, 편집기, 브라우저, 모바일과 원격 실행까지 하나의 ADE로 묶은 선행 제품이다. Pawdex는 Orca의 worktree lifecycle, comparative run, 세션 복원, diff feedback과 공식 문서상 experimental인 durable orchestration 패턴을 참고하지만 전체 IDE·PTY·SSH 제품이 되지는 않는다. 특히 worktree를 OS sandbox로 간주하거나 agent approval/sandbox를 기본 우회하는 정책은 채택하지 않는다.
+
 | 영역 | Codex 기본 경험 | Happy에서 참고할 점 | Pawdex의 초점 |
 | --- | --- | --- | --- |
 | 단일 세션 원격 사용 | 기본 제품 기능 활용 | 다양한 클라이언트와 세션 연속성 | 최소 구현, 기존 기능과 경쟁하지 않음 |
@@ -72,6 +86,8 @@ Codex는 자체적으로 Remote, Voice, Pets, Notifications 같은 사용자 기
 | 음성 | 기본 Voice가 맞는 사용자에게는 그대로 권장 | 원격 음성 아키텍처 참고 | 세션·턴·요청 ID에 결합된 안전한 의도 라우팅 |
 | 확장성 | Codex 계약에 맞춤 | 오픈소스 구조 참고 | 런타임 어댑터, 버전 계약 테스트, 로컬 API |
 | 보안 | Codex 권한 모델을 존중 | E2EE 설계 참고 | 원격 셸 금지, 최소 정보 relay, 명시적 고위험 승인 |
+
+Orca와의 세부 비교 및 채택/보류 결정은 [REFERENCE_REVIEW.md](./REFERENCE_REVIEW.md)에 기록한다.
 
 ### 5.2 제품 약속
 
@@ -88,7 +104,9 @@ Codex는 자체적으로 Remote, Voice, Pets, Notifications 같은 사용자 기
 7. **알림 피로를 제품 결함으로 취급**: durable Attention과 기기·정책 단계 조합당 한 번만 알리고, 조용한 시간과 제한된 escalation을 적용한다.
 8. **복구 가능성 우선**: 프로세스와 네트워크가 중단되어도 journal과 snapshot으로 상태를 재구성한다.
 9. **공급자 종속은 어댑터 안에 격리**: Codex 전용 코드는 `apps/daemon/src/codex` 아래에 둔다.
-10. **기능이 디자인보다 먼저 검증됨**: 현재 저장소 UI는 폐기 가능한 기술 스파이크이며 최종 디자인 기준이 아니다.
+10. **단순한 기본 흐름, 필요할 때 세부정보**: 승인된 Figma 제품 UX 초안의 정보 구조를 구현 기준으로 삼고, 일상 언어의 핵심 행동을 먼저 보여 준 뒤 기술 세부정보를 점진적으로 공개한다.
+11. **사용량보다 유용한 결과가 우선**: reset 전 활용 모드는 사용자가 미리 선택한 가치 있는 큐만 실행한다. 목표를 채우기 위한 filler·중복 작업을 만들거나 정확한 100% 소진을 약속하지 않는다.
+12. **접근성은 완료 조건**: 상태와 행동을 색이나 소리에만 의존하지 않으며 키보드, 스크린 리더, 대비, 터치 목표, reduced motion을 화면 구현과 테스트의 승인 기준에 포함한다.
 
 ## 7. 핵심 도메인 개념
 
@@ -99,7 +117,11 @@ Codex는 자체적으로 Remote, Voice, Pets, Notifications 같은 사용자 기
 | workspace root | Project가 가리키는 실제 로컬 디렉터리. 원격 클라이언트가 임의 `cwd`로 지정하는 API 리소스가 아니다 |
 | Session | 하나의 Codex thread에 대응하는 Pawdex 작업 채널 |
 | Turn | 사용자의 한 요청과 이에 따른 Codex 실행 단위 |
-| Plan / Task | Plan은 확인 전·실행 중인 DAG 전체이고, Task는 확인된 Plan 안에서 목표·입력·의존성·결과를 갖는 실행 노드다 |
+| Plan / Task | Plan은 확인 전·실행 중인 DAG 전체이고, Task는 확인된 Plan 안에서 목표·입력·의존성·결과를 갖는 안정된 실행 노드다 |
+| TaskAttempt | 한 Task의 한 번의 구체적 실행 시도. 재시도마다 새 ID를 사용해 이전 시도의 늦은 완료·실패 신호가 현재 결과를 덮지 못하게 한다 |
+| Artifact / Checkpoint | Artifact는 의존 Task가 commit/tree/checksum으로 고정해 전달하는 결과이고, Checkpoint는 다음 단계 전 정책 또는 사람의 결정을 기다리는 durable gate다 |
+| RunBudget | Task 수·DAG 깊이·attempt 수·벽시계 시간·동시 resident process·output·disk에 적용하는 실행 hard cap. provider가 신뢰 가능한 값을 주는 경우에만 token/cost도 포함한다 |
+| UsageWindowPreset / Run | Preset은 선택 queue, 목표 사용률 범위, reserve, reset 전 launch 중지 시각, 동시성·비용 상한을 로컬 관리자가 미리 고정한 P1 정책이다. Run은 최신 provider snapshot과 해당 preset revision에 결박한 한 번의 실행이다 |
 | Worktree | 쓰기 가능한 Task를 다른 Task와 격리하는 Git 작업 디렉터리 |
 | Approval | 명령·파일·권한·사용자 질문·MCP elicitation을 method별 타입으로 정규화한 응답 대상 |
 | Attention Item | Approval, 완료, 실패, 상태 재조정 필요처럼 사람의 인지가 필요한 durable 사건 |
@@ -122,18 +144,24 @@ Session의 정규 상태는 `starting`, `ready`, `running`, `needs_input`, `comp
 - 쓰기 Task는 worktree로 격리하고 결과 통합 전 충돌과 테스트 상태를 보여준다.
 - daemon 재시작과 네트워크 재연결 뒤 상태와 미처리 Attention Item을 복구한다.
 - 로컬 API, 이벤트 프로토콜, 테스트 fixture를 공개해 하네스 확장을 쉽게 한다.
+- 데스크톱과 모바일의 핵심 화면은 승인된 Figma 제품 UX 초안의 흐름·정보 우선순위와 접근성 기준을 따른다.
 
 ### 8.2 MVP 비목표
 
-- 화면 디자인, 캐릭터 일러스트, 애니메이션, 최종 정보 구조 확정
+- 최종 시각 브랜드, 캐릭터 일러스트, 정교한 애니메이션과 마케팅 표현 확정
 - IDE 또는 터미널 전체를 원격 데스크톱처럼 제공
+- 터미널 split, Monaco 편집기, 내장 브라우저·Design Mode를 포함하는 범용 ADE 구축
 - 임의 셸 명령을 모바일에서 직접 실행
+- 모바일 raw terminal, 임의 keystroke 전달, 범용 stage/commit·포트 포워딩
 - 사용자의 확인 없이 충돌을 자동 해결하거나 기본 브랜치에 병합
 - 항상 켜진 웨이크 워드 또는 백그라운드 상시 녹음
 - 모든 모바일 OS에서 동일한 커스텀 알림음을 보장
 - 조직용 RBAC, SSO, 감사 보존 정책, 다중 사용자 공동 제어
 - Codex 기본 Remote·Voice·Notifications 경험을 그대로 복제
 - 첫 릴리스부터 모든 AI 에이전트 공급자를 지원
+- 여러 Codex 자격증명 디렉터리를 복제하거나 계정을 자동 전환해 사용량 제한을 우회
+- reset 전 사용량을 채우기 위해 새 filler·중복 작업을 만들거나, reset credit·유료 credit·overage를 자동 소비해 실행을 연장
+- provider 집계 지연과 작업별 편차를 무시하고 “남은 token을 정확히 100% 사용”한다고 보장
 
 ## 9. 핵심 사용자 여정
 
@@ -157,11 +185,11 @@ Session의 정규 상태는 `starting`, `ready`, `running`, `needs_input`, `comp
 ### 9.3 큰 작업 자동 분할
 
 1. 사용자가 목표와 미리 등록된 Project를 지정하고 “병렬로 나눠 줘”라고 요청한다.
-2. Planner가 Task, 입력, 산출물, 의존성, 쓰기 범위, 검증 명령을 제안한다.
-3. Pawdex는 예상 충돌과 동시성 비용을 검사하고 실행 전 계획을 고정한다.
-4. 독립 쓰기 Task마다 worktree와 브랜치를 만들고 `ready` Task만 실행한다.
-5. 선행 Task가 실패하거나 입력을 기다리면 의존 Task는 시작하지 않는다.
-6. 완료 결과를 검증하고 integration Task를 실행한다. 병합·삭제처럼 파괴 가능성이 있는 단계는 잠금 해제된 인증 UI에서 사용자가 명시적으로 승인한다.
+2. Planner가 Task, 입력, 산출물, 의존성, 쓰기 범위와 로컬 관리자가 미리 등록한 `verificationTemplateId` 및 typed 인자를 제안한다. Planner와 원격 클라이언트는 검증 템플릿을 만들거나 바꿀 수 없다.
+3. Pawdex는 예상 충돌, resource claim, source tree OID, `RunBudget`을 검사하고 사용자가 확인한 Plan revision을 동결한다.
+4. 독립 쓰기 Task마다 worktree와 브랜치를 만들고, 필요한 lease를 획득한 `ready` Task에 고유 `TaskAttempt`를 발급해 실행한다.
+5. 선행 Task가 실패하거나 입력을 기다리면 의존 Task는 시작하지 않는다. 성공한 선행 결과는 commit/tree/checksum으로 고정된 Artifact로만 materialize하며 fan-in 충돌은 Attention으로 막는다.
+6. 완료 결과를 동결된 source tree OID와 allowlisted verification template로 검증하고 integration Task를 실행한다. 병합·삭제처럼 파괴 가능성이 있는 단계는 잠금 해제된 인증 UI에서 사용자가 명시적으로 승인한다.
 
 ### 9.4 연결 또는 daemon 재시작
 
@@ -170,6 +198,14 @@ Session의 정규 상태는 `starting`, `ready`, `running`, `needs_input`, `comp
 3. 보존 범위를 벗어났다면 daemon이 authoritative snapshot을 보내고 클라이언트가 로컬 상태를 교체한다.
 4. 미해결 Approval은 App Server와 재조정한다. 이미 해결된 요청에 대한 늦은 응답은 거부한다.
 5. 알림 발송 기록으로 같은 상태 전환을 다시 울리지 않는다.
+
+### 9.5 한 버튼으로 reset 전 작업 큐 실행(P1)
+
+1. 사용자는 평소에 가치가 독립적으로 검증된 Task만 전용 queue에 넣고, 목표 사용률 범위·reserve·reset 전 launch buffer·동시성·비용 상한을 `UsageWindowPreset`으로 로컬에서 저장한다.
+2. Pawdex는 Codex App Server의 최신 rate-limit bucket(`usedPercent`, `windowDurationMins`, `resetsAt`)과 로컬 실행 이력으로 각 Task의 사용량·시간을 `min/likely/max` 범위와 confidence로 예측한다.
+3. 사용자가 잠금 해제된 인증 UI의 단일 실행 action을 누르면, daemon은 현재 snapshot·preset/queue/Project revision·예측 요약·user-presence receipt에 결박한 idempotent `UsageWindowRun`을 만든다. 원격 시작은 별도 capability가 있는 폐기되지 않은 paired device만 가능하고 preset·queue 편집은 계속 로컬 전용이다. snapshot이 stale/unknown이거나 조건이 바뀌었으면 실행 대신 새 preview를 요구한다.
+4. scheduler는 이미 확인·동결되어 `ready`인 Task만 기존 lease, `RunBudget`, Checkpoint, Approval 규칙으로 시작하고 각 attempt 완료 또는 rate-limit 갱신 뒤 예측을 다시 계산한다.
+5. 목표 범위 도달, 큐 소진, reset 시각 변경, launch buffer 진입, stale usage, blocker/실패 임계값, 비용 위험 또는 사용자 취소 중 하나가 발생하면 새 작업 시작을 멈추고 결과·남은 큐·중지 이유를 Attention으로 남긴다. 실행 중 작업은 토큰을 맞추려고 강제 중단하지 않는다.
 
 ## 10. 출시 범위
 
@@ -184,7 +220,7 @@ Session의 정규 상태는 `starting`, `ready`, `running`, `needs_input`, `comp
 - 공개 P0에 포함하되 사용자 opt-in으로 켜는 outbound E2EE relay 외부 연결과 기기 페어링
 - push-to-talk 음성 전사, 대상 확인, follow-up/steer 및 pending 사용자 질문 answer 라우팅
 - 사용자가 확인한 Task DAG, 동시성 제한, worktree 격리
-- 충돌 감지, 검증 명령 결과, 사용자가 확인하는 typed cherry-pick/merge/patch-export 수동 통합 게이트
+- 충돌 감지, allowlisted verification template 실행 결과, 사용자가 확인하는 typed cherry-pick/merge/patch-export 수동 통합 게이트
 - 이벤트 WebSocket/HTTP API와 로컬 CLI
 - 고양이 알림 프리셋과 지원 채널의 야옹 소리
 
@@ -198,7 +234,10 @@ P0의 “야옹 소리”는 채널 capability에 따라 동작한다. 웹 푸�
 - 조건부 자동 계획 실행과 정책 기반 재시도
 - GitHub 이슈·PR·CI 어댑터
 - cross-Machine quota, 비용·시간 예산, 고급 scheduling 정책
-- 작업 결과 비교와 정책 기반 통합 방식 제안
+- 동일한 frozen task/base를 여러 후보에 실행하는 comparative run과 사용자가 고르는 winner 통합
+- line-anchored diff 코멘트의 batch feedback·재검토 루프
+- 최근 turn이 완료되고 idle window가 지났으며 resumable이고 해당 Session에 active control lease·pending Approval·unsettled TaskAttempt/subagent가 없을 때의 hibernation/warm resume, 그리고 provider usage·rate-limit 가시성
+- `UsageWindowPreset`으로 미리 선택한 큐를 reset 전 목표 사용률 범위까지 한 번에 실행하는 `UsageWindowRun`; 정확한 소진, 자동 결제·reset credit 소비, 계정 전환은 제외
 
 ### 10.3 P2: 팀·생태계
 
@@ -207,6 +246,7 @@ P0의 “야옹 소리”는 채널 capability에 따라 동작한다. 웹 푸�
 - 공급자 중립 agent adapter SDK
 - Task Graph 템플릿과 커뮤니티 registry
 - 항상 듣기 기능은 별도 명시 동의, 로컬 wake word, 플랫폼 정책 검증 후에만 검토
+- SSH/원격 실행 host, 포트 포워딩, 다중 provider federated worker는 별도 위협 모델과 제품 검증 뒤 검토
 
 ## 11. 성공 지표와 품질 목표
 
@@ -218,6 +258,7 @@ P0의 “야옹 소리”는 채널 capability에 따라 동작한다. 웹 푸�
 - **원격 후속 성공률**: 모바일 지시가 의도한 세션과 턴에 한 번만 전달된 비율
 - **복구 신뢰도**: 강제 재시작·네트워크 단절 테스트에서 누락 또는 중복 Attention Item이 없는 비율
 - **활성 사용**: 주당 2개 이상 동시 세션을 실행한 활성 설치 수와 재사용률
+- **Usage Window 유효 결과율(P1)**: 실행한 Task 중 중복·filler 없이 원래 큐의 수용 기준을 통과한 비율과 안전 중지 조건 준수율
 
 ### 11.2 MVP 품질 게이트
 
@@ -257,6 +298,9 @@ P0의 “야옹 소리”는 채널 capability에 따라 동작한다. 웹 푸�
 | daemon 재시작 | 진행 상태·Approval 유실 | append-only journal, idempotent reducer, App Server reconciliation |
 | 자동 분할의 잘못된 계획 | 범위 증가, 비용 낭비 | 제안과 실행 분리, 동시성·예산 상한, destructive integration의 인증 UI 승인 |
 | 기존 Codex 기능과 중복 | 제품 가치 불명확 | 오케스트레이션·개방형 계약·self-host에 집중하고 기본 기능은 재사용 |
+| 전체 ADE로의 범위 팽창 | 핵심 가치 검증 지연, 공격 표면 증가 | terminal/editor/browser/SSH는 비목표로 유지하고 orchestration·attention·review 계약만 선별 채택 |
+| stale usage·낙관적 예측으로 과도 실행 | reset 이후 작업 중단, 유료 사용·자원 낭비 | official bucket freshness 확인, min/likely/max 예측, reserve·launch buffer·RunBudget, 매 attempt 재계산, 결제·reset credit 자동 소비 금지 |
+| prompt가 reset 활용을 빌미로 큐를 늘림 | 무의미·중복 작업과 비용 증가 | local-admin preset의 기존 Task만 허용, queue/Plan revision 결박, 자동 filler 생성·scope 확장 금지 |
 
 ## 14. 확정할 결정과 열린 질문
 
@@ -268,7 +312,7 @@ P0의 “야옹 소리”는 채널 capability에 따라 동작한다. 웹 푸�
 - 쓰기 병렬 작업은 worktree 격리를 기본값으로 한다.
 - 질문과 승인은 method별 타입을 가진다. 임의 JSON 결과를 전달하는 범용 승인 API는 제품 API로 노출하지 않는다.
 - destructive/elevated 승인의 수락은 음성으로 완료할 수 없고 잠금 해제된 인증 UI의 명시적 action을 요구한다. 음성은 해당 화면으로 이동하거나 거절·취소만 할 수 있다.
-- UI 디자인은 별도 디자인 입력 전까지 확정하지 않는다.
+- `Pawdex — Product UX` Figma 초안을 화면 동작·정보 구조의 구현 기준으로 사용하되 시각 브랜드는 사용성·접근성 검증에 따라 발전시킨다.
 
 ### 14.2 구현 전 답해야 할 질문
 
@@ -281,8 +325,9 @@ P0의 “야옹 소리”는 채널 capability에 따라 동작한다. 웹 푸�
 - 기본 알림 정책에서 `needs_input`, `failed`, `completed` 중 quiet hours를 우회할 수 있는 종류
 - 오픈소스 core와 향후 hosted relay의 경계 및 비용 모델
 - 익명 telemetry를 완전히 opt-in으로 할지, 기본 비활성으로 둘지
+- `UsageWindowPreset`의 기본 reserve/launch buffer, 최소 이력 표본 수, 허용할 forecast confidence와 원격 단일 action의 재인증 시간
 
-이 질문 중 보안, 데이터 보존, 모바일 기술 선택은 구현 전에 ADR로 확정한다. 화면 구조와 비주얼 결정은 기능 계약이 고정된 뒤 별도 디자인 단계에서 다룬다.
+이 질문 중 보안, 데이터 보존, 모바일 기술 선택은 구현 전에 ADR로 확정한다. 화면 구조 변경은 기능 계약과 Figma 구현 기준을 함께 갱신하고, 비주얼 브랜드 결정은 별도 디자인 검증으로 다룬다.
 
 ## 15. 단계별 제품 검증
 
@@ -294,15 +339,20 @@ P0의 “야옹 소리”는 채널 capability에 따라 동작한다. 웹 푸�
 6. **Voice Beta**: push-to-talk, follow-up/steer, pending 사용자 질문 answer 라우팅을 로컬과 원격 경로에서 검증한다.
 7. **Public MVP Beta**: 모든 P0 기능과 보안 Gate, 설치, 업그레이드, 호환성 문서, 장애 복구 테스트를 갖춰 첫 공개 beta로 배포한다.
 
-각 단계는 사용자의 디자인 제공을 기다리지 않고 headless/CLI와 계약 테스트로 검증할 수 있다. 단, 사용자용 화면 구현은 디자인 기준이 확정된 뒤 제품화한다.
+각 단계의 headless/CLI와 계약은 화면과 독립적으로 검증한다. 사용자용 화면은 승인된 Figma 제품 UX 초안을 기준으로 구현하고, 사용성·접근성 검증 결과를 기능 계약과 초안에 함께 반영한다.
 
 ## 16. 참고 자료
 
 - [Pawdex 목표 프로토콜](./PROTOCOL.md)
+- [Pawdex Figma 제품 UX 초안](https://www.figma.com/design/24X7ul4Vb9aTKZXpSY0OL3/pinpop?node-id=2290-2)
 - [Codex App Server 공식 문서](https://learn.chatgpt.com/ko-KR/docs/app-server)
+- [Codex App Server usage·rate-limit 계약](https://learn.chatgpt.com/docs/app-server)
 - [Codex Git worktree 공식 문서](https://learn.chatgpt.com/ko-KR/docs/environments/git-worktrees)
 - [Codex Remote 공식 문서](https://learn.chatgpt.com/docs/remote)
 - [Codex Voice 공식 문서](https://learn.chatgpt.com/docs/features/voice)
 - [Codex Notifications 공식 문서](https://learn.chatgpt.com/docs/notifications)
 - [Codex Pets 공식 문서](https://learn.chatgpt.com/docs/pets)
 - [Happy 저장소](https://github.com/slopus/happy)
+- [Orca 저장소](https://github.com/stablyai/orca)
+- [Orca 공식 문서](https://www.onorca.dev/docs)
+- [GeekNews Orca 소개](https://news.hada.io/topic?id=32253)
